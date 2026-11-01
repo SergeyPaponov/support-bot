@@ -1,0 +1,21 @@
+# Optional strategic-merge patch. Create support-bot-policy ConfigMap first.
+spec:
+  template:
+    spec:
+      containers:
+        - name: support-bot
+          env:
+            - name: DATA_POLICY_FILE
+              value: /etc/support-bot/sanitization-policy.json
+          volumeMounts:
+            - name: sanitization-policy
+              mountPath: /etc/support-bot
+              readOnly: true
+      volumes:
+        - name: sanitization-policy
+          configMap:
+            name: support-bot-policy
+            defaultMode: 0444
+            items:
+              - key: sanitization-policy.json
+                path: sanitization-policy.json

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: support-bot-config
+  labels:
+    app.kubernetes.io/name: support-bot
+data:
+  HOST: "0.0.0.0"
+  PORT: "3000"
+  SPLUNK_EXPORT_URL: "https://splunk.example.com:8089/services/search/jobs/export"
+  SPLUNK_INDEX: "gateway"
+  SPLUNK_TRANSACTION_FIELD: "transactionId"
+  APIC_PLATFORM_URL: "https://apic-platform.example.com"
+  APIC_ANALYTICS_SERVICE: "analytics-service-name-or-id"
+  APIC_ORG: "provider-org-name-or-id"
+  APIC_CATALOG: "catalog-name-or-id"
+  APIC_TRANSACTION_FIELD: "global_transaction_id"
+  APIC_SPEC_URL_TEMPLATE: "https://apic-platform.example.com/api/catalogs/provider-org-name-or-id/catalog-name-or-id/apis/{apiId}/document"
+  LLM_URL: "https://llm-connector.example.com/v1/chat/completions"
+  LLM_MODEL: "replace-with-approved-model"
+  UPSTREAM_TIMEOUT_MS: "20000"
+  MAX_CONCURRENT_ANALYSES: "4"
+  NO_PROXY: "localhost,127.0.0.1,::1,.svc,.cluster.local"
+  # DATA_POLICY_FILE is deliberately absent: default policy is in the image.
+  # Add corporate HTTP_PROXY/HTTPS_PROXY without credentials here only if needed.
+  # Credential-bearing proxy URLs belong in support-bot-secrets instead.

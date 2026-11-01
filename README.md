@@ -2,6 +2,8 @@
 
 TypeScript-сервер диагностики API-транзакций. Один сервис анализа доступен как MCP-инструмент `analyze_transaction` через Streamable HTTP (`POST /mcp`) и как обычный HTTP API (`POST /api/analyze`).
 
+Контейнеризация и ручное развёртывание на OpenShift: [WP2: build, manifests, policy/CA mounts и проверки](deploy/openshift/README.md). Production image собирается через `docker build -f Containerfile -t support-bot:wp2 .`; повторяемый container smoke test — `node scripts/container-smoke.mjs support-bot:wp2`.
+
 Целевая версия: **API Connect 10.0.8.10**. Источники — Splunk и нативный Analytics API API Connect, доступный через Platform API host (тот же API используется интерфейсом API Manager). Management API предоставляет спецификации. Прямое подключение к DataPower больше не требуется. LLM-коннектор по умолчанию использует OpenAI-compatible Chat Completions.
 
 ```mermaid

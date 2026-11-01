@@ -1,0 +1,18 @@
+# Optional public CA bundle only. Proxy credentials must remain in a Secret.
+spec:
+  template:
+    spec:
+      containers:
+        - name: support-bot
+          env:
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/corporate-ca/ca-bundle.pem
+          volumeMounts:
+            - name: corporate-ca
+              mountPath: /etc/corporate-ca
+              readOnly: true
+      volumes:
+        - name: corporate-ca
+          configMap:
+            name: support-bot-corporate-ca
+            defaultMode: 0444

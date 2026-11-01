@@ -1,0 +1,25 @@
+# Default-deny build context: only the inputs required by Containerfile.
+**
+!Containerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/
+!src/**/
+!src/**/*.ts
+!test/
+!test/**/
+!test/**/*.ts
+!config/
+!config/sanitization-policy.json
+# Defense in depth if the source allowlist is extended later.
+**/.env*
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/node_modules/
+**/dist/
+**/.git/
