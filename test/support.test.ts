@@ -55,7 +55,7 @@ test('pipeline fetches scoped sources, redacts context, and validates diagnosis'
   assert.ok(!context.includes('credential-that-must-not-leak'));
   assert.ok(!context.includes('password-that-must-not-leak'));
   assert.ok(!context.includes('user@example.com'));
-  assert.match(context, /REDACTED/);
+  assert.match(context, /diagnosticSignals/);
 });
 test('Swagger YAML is accepted', async () => { assert.equal((await fixture({ yaml: true }).analyzer.analyze(input)).diagnosis.confidence, 'high'); });
 test('invalid input and query injection are rejected before any requests', async () => {
@@ -73,9 +73,15 @@ for (const [name, options, code] of [
   ['invalid model schema', { completion: { summary: 'only summary' } }, 'INVALID_LLM_RESPONSE'],
   ['invented log evidence', { completion: { ...diagnosis, evidence: [{ ...diagnosis.evidence[0], logId: 'made-up:1' }] } }, 'INVALID_LLM_EVIDENCE'],
   ['invented spec evidence', { completion: { ...diagnosis, evidence: [{ ...diagnosis.evidence[0], specPointer: '/missing' }] } }, 'INVALID_LLM_EVIDENCE'],
-  ['oversized context', { bigLogs: true }, 'CONTEXT_TOO_LARGE'],
 ] as const) test(name, async () => {
   await assert.rejects(() => fixture(options).analyzer.analyze(input), { code });
+});
+test('large unselected payload is excluded rather than consuming the LLM budget', async () => {
+  const f = fixture({ bigLogs: true });
+  await f.analyzer.analyze(input);
+  const request = String(f.calls.find(c => c.url.includes('llm.example'))?.init?.body);
+  assert.ok(request.length < 10000);
+  assert.ok(!request.includes('x'.repeat(100)));
 });
 test('evidence-free diagnosis has low confidence', async () => {
   const result = await fixture({ completion: { ...diagnosis, evidence: [] } }).analyzer.analyze(input);

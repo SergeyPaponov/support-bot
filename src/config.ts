@@ -29,6 +29,7 @@ const configSchema = z.object({
   LLM_MODEL: z.string().min(1),
   UPSTREAM_TIMEOUT_MS: z.coerce.number().int().min(100).max(120000).default(20000),
   MAX_CONCURRENT_ANALYSES: z.coerce.number().int().min(1).max(50).default(4),
+  DATA_POLICY_FILE: z.string().min(1).optional(),
 });
 export type Config = z.infer<typeof configSchema>;
 export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
