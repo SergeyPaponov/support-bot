@@ -148,7 +148,7 @@ oc rollout status deployment/support-bot --timeout=120s
 
 ## Probes, доступ и остановка
 
-Startup, liveness и readiness используют существующий `/healthz`. Он становится доступен после успешной проверки локальной конфигурации/policy и открытия HTTP listener. Он **не подтверждает** доступность Splunk/APIC/LLM, действительность credentials или разрешения сети. Это process/local readiness, а не dependency health check; отдельный endpoint и исходящие probe-запросы не добавлены.
+Startup и liveness используют существующий публичный `/healthz` (200, `{"status":"ok"}`). Readiness использует публичный `/readyz`: 200 (`{"status":"ready"}`) после успешной проверки локальной конфигурации/policy и открытия listener; 503 (`{"status":"not_ready"}`) при initializing/draining. Readiness не подтверждает доступность Splunk/APIC/LLM, действительность credentials или разрешения сети и не вызывает внешние API. После закрытия listener probe может получить connection refusal вместо HTTP 503 — pod всё равно не Ready.
 
 Сохраняются `POST /mcp` (stateless Streamable HTTP) и `POST /api/analyze`. Для вызовов нужен существующий Bearer key. Public Route/Ingress, новые auth/RBAC и TLS termination не создаются. Доступ для ручной проверки без Route:
 
@@ -156,12 +156,17 @@ Startup, liveness и readiness используют существующий `/h
 oc port-forward service/support-bot 3000:3000
 # В другом терминале:
 curl --fail http://127.0.0.1:3000/healthz
+curl --fail http://127.0.0.1:3000/readyz
 oc logs -f deployment/support-bot
 ```
 
 Внутренний Service использует HTTP. При необходимости TLS/mTLS или более строгой namespace isolation используйте одобренные ingress/mesh/network policy решения отдельной задачей.
 
-Логи остаются на stdout/stderr. SIGTERM обрабатывается существующим Node shutdown handler: stop accepting connections, ожидание завершения HTTP server, затем exit; текущий application deadline — 10 секунд. Pod grace period — 30 секунд. Запрос дольше application deadline может быть прерван; zero-downtime drain долгих LLM calls этой задачей не гарантируется. Smoke test проверяет чистое завершение idle процесса с exit 0.
+WP2.2 пишет JSON Lines в stdout (startup, ready, shutdown started/completed, analysis success) и stderr (startup/analysis failure, shutdown timeout). Поля: UTC timestamp, level, event, generated requestId, interface (`process`/`REST`/`MCP`), durationMs, outcome, safe errorCode. Клиентские IDs/headers, URLs, bodies, credentials, события Splunk, specs, LLM prompts/completions и тексты исключений не логируются. Unknown codes → `INTERNAL_ERROR`; startup failures → `STARTUP_FAILED`. MCP logical errors, включая SDK argument validation, считаются failure даже при HTTP 200. Записи синхронные и небольшие; учитывайте возможную задержку event loop при медленном collector.
+
+SIGINT/SIGTERM немедленно и idempotently включают draining, закрывают admission новых analyses (`503 DRAINING`) и вызывают `server.close()`. Инициализация использует `503 NOT_READY`. Новые TCP connections не принимаются; уже начатые REST/MCP requests получают возможность завершиться, включая analysis после client disconnect. Повторные сигналы не меняют deadline. Shutdown ждёт HTTP close и завершения активных analysis promises; затем `shutdown_completed`, exit 0. Только по истечении `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, exit 1. Smoke harness проверяет idle stop; npm tests также проверяют настоящие SIGTERM во время REST и MCP calls с mock upstream barrier и deadline/repeated signals через injectable clock.
+
+Default `SHUTDOWN_TIMEOUT_MS=90000` задан в ConfigMap; `terminationGracePeriodSeconds=105` даёт дополнительный запас. Это **best-effort operational budget**, не гарантия zero-downtime: pagination и последовательные upstream стадии могут превысить deadline; SIGKILL/OOM/event-loop stalls могут помешать graceful shutdown. При override согласуйте grace period и rollout timeout. Не изменены upstream timeout (20000 ms), fail-fast provider behavior, retries и business/sanitization semantics. ConfigMap/Secret updates требуют restart, как и прежде.
 
 ## Выполненная проверка и ограничения
 

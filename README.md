@@ -31,7 +31,21 @@ cp .env.example .env
 npm run dev
 ```
 
-Сборка: `npm run build`, запуск сборки: `npm start`. Проверки: `npm run typecheck` и `npm test`. `GET /healthz` проверяет только работу HTTP-процесса, доступность внешних систем он не подтверждает.
+Сборка: `npm run build`, запуск сборки: `npm start`. Проверки: `npm run typecheck` и `npm test`. Публичный `GET /healthz` проверяет только работу HTTP-процесса. Публичный `GET /readyz` возвращает 200 после локальной инициализации и открытия listener, 503 при инициализации или draining. Доступность внешних систем эти endpoints не подтверждают.
+
+### WP2.2: operational logging и lifecycle
+
+Операционные события записываются как JSON Lines: `timestamp` (UTC), `level`, `event`, `requestId`, `interface` (`process`, `REST`, `MCP`), `durationMs`, `outcome`, `errorCode` (`null` при успехе). ID генерируется сервером через UUID, не берётся из клиентского заголовка, JSON-RPC ID или transaction ID. Startup/ready используют общий ID, shutdown started/completed/timeout — другой общий ID; каждый REST request / MCP analysis call имеет собственный ID. Normal events идут в stdout, failures/timeouts — в stderr. Записи небольшие и синхронные, чтобы финальное событие не терялось при exit; медленный log collector может задерживать event loop.
+
+Logger принимает только фиксированные события и коды: credentials, headers, transaction/customer/API IDs, request/response bodies, Splunk events, specs, prompts/completions, URLs и тексты исключений в него не передаются. Неизвестный код заменяется на `INTERNAL_ERROR`; startup failure сообщает только `STARTUP_FAILED`. Это allowlist metadata, а не попытка отредактировать произвольный текст. MCP `isError` и отказы SDK при проверке arguments логируются как failures даже при HTTP 200; успешные initialize/tools/list не считаются анализом. Health/readiness probes не создают analysis logs. REST/MCP auth/body/Origin rejections также дают безопасное failure-событие.
+
+Lifecycle — injectable instance state: initializing → ready → draining → stopped. Config и sanitization policy проверяются до ready. Readiness не выполняет исходящие запросы к Splunk/APIC/LLM, не раскрывает их состояние и не меняет существующие sanitization/auth controls. При draining новый REST/MCP analysis отклоняется с HTTP 503 и безопасным error envelope (`DRAINING`; до ready — `NOT_READY`). Результаты уже начатых анализов и обычные MCP `isError` contracts сохраняются.
+
+SIGINT/SIGTERM синхронно включают draining и вызывают HTTP `server.close()`. Новые соединения перестают приниматься; уже начатые REST/MCP analyses, включая обработку после отключения клиента, могут закончить работу. Shutdown ждёт и завершения HTTP responses, и активных analysis promises. Повторные сигналы не запускают новый timer и не сокращают deadline. По завершении — `shutdown_completed`, exit 0. Только после истечения `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, процесс завершается с exit 1.
+
+`SHUTDOWN_TIMEOUT_MS=90000` по умолчанию (целое 1–2147483647 ms); OpenShift `terminationGracePeriodSeconds=105`. Это **best-effort operational budget**, не гарантия завершения любого анализа: pagination и последовательные стадии могут превысить deadline. При изменении budget согласуйте pod grace period, rollout timeout и запас для остановки. `UPSTREAM_TIMEOUT_MS` (20000 по умолчанию), retries, fail-fast provider behavior и бизнес-семантика анализа не изменены. Клиентские disconnects не отменяют analysis; deadline ограничивает ожидание при остановке. Внешний kill/OOM или блокировка event loop могут помешать graceful shutdown.
+
+Тесты WP2.2 используют только synthetic fixtures/mocked upstreams: проверяют отсутствие чувствительных значений в логах, REST/MCP outcomes (включая SDK errors внутри HTTP 200), readiness transitions, запрет новой работы, настоящий SIGTERM во время REST/MCP analysis и idempotence/deadline через injectable clock. Container smoke test и OpenShift admission — отдельные проверки, TypeScript build их не заменяет.
 
 Все рабочие маршруты требуют `Authorization: Bearer <SERVER_API_KEY>`; ключ не короче 24 символов. В production используйте HTTPS reverse proxy, ограничение доступа и rate limiting. Общий ключ даёт доступ ко всем настроенным источникам; tenant/user RBAC пока не реализован. Origin-запросы браузера запрещены. URL источников задаются только серверной конфигурацией; клиент передаёт идентификаторы и временной диапазон.
 
@@ -76,7 +90,7 @@ curl http://127.0.0.1:3000/api/analyze \
 
 Это пример формата, а не результат проверки реальной транзакции. Причина — вывод LLM, а не детерминированное доказательство. Сервис проверяет формат и существование ссылок, но не истинность рассуждения модели. Без evidence уверенность принудительно `low`.
 
-Ошибки REST: `400` некорректный ввод, `401` авторизация, `403` Origin, `404` нет логов, `422` превышен бюджет контекста/логов, `429` заняты слоты анализа, `502` ошибка источника, спецификации или LLM. Ответ: `{"error":{"code":"...","message":"..."}}`. Ошибка любого обязательного источника прерывает анализ; пустой успешный источник отмечается в `warnings`. MCP сообщает ошибки инструмента через `isError`, согласно протоколу.
+Ошибки REST: `400` некорректный ввод, `401` авторизация, `403` Origin, `404` нет логов, `422` превышен бюджет контекста/логов, `429` заняты слоты анализа, `502` ошибка источника, спецификации или LLM, `503` приложение ещё не готово или останавливается. Ответ: `{"error":{"code":"...","message":"..."}}`. Ошибка любого обязательного источника прерывает анализ; пустой успешный источник отмечается в `warnings`. MCP сообщает ошибки инструмента через `isError`, согласно протоколу.
 
 ## MCP-клиент
 

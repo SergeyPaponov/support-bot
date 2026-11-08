@@ -95,6 +95,7 @@ try {
     await new Promise(r=>setTimeout(r,100));
   }
   assert.equal(health?.status,200);
+  assert.equal((await fetch('http://127.0.0.1:3000/readyz')).status,200);
   const response=await fetch('http://127.0.0.1:3000/api/analyze',{method:'POST',headers,body:JSON.stringify(input)});
   assert.equal(response.status,200);
   assert.equal((await response.json()).transactionId,input.transactionId);
@@ -136,7 +137,10 @@ try {
   assert.equal(docker(['wait', name]), '1');
   const logs = spawnSync('docker', ['logs', name], { encoding: 'utf8' });
   assert.equal(logs.status, 0);
-  assert.match(logs.stdout + logs.stderr, /Invalid or unreadable sanitization policy/);
+  const startupFailure = (logs.stdout + logs.stderr).split('\n').filter(Boolean)
+    .map(line => { try { return JSON.parse(line); } catch { return {}; } })
+    .find(record => record.event === 'startup_failed');
+  assert.equal(startupFailure?.errorCode, 'STARTUP_FAILED');
   console.log('Invalid mounted policy: startup rejected, no fallback: PASS');
   console.log('Runtime image metadata and absence of env/source/test/dev dependency/build-CA files: PASS');
 } catch (error) {

@@ -16,7 +16,7 @@ spec:
         app.kubernetes.io/name: support-bot
     spec:
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 105
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -63,7 +63,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             periodSeconds: 5
             timeoutSeconds: 2

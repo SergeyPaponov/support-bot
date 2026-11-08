@@ -20,6 +20,7 @@ data:
   LLM_MODEL: "replace-with-approved-model"
   UPSTREAM_TIMEOUT_MS: "20000"
   MAX_CONCURRENT_ANALYSES: "4"
+  SHUTDOWN_TIMEOUT_MS: "90000"
   NO_PROXY: "localhost,127.0.0.1,::1,.svc,.cluster.local"
   # DATA_POLICY_FILE is deliberately absent: default policy is in the image.
   # Add corporate HTTP_PROXY/HTTPS_PROXY without credentials here only if needed.
