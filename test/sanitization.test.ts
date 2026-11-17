@@ -271,23 +271,22 @@ test('terminal exclude rules and freeText exclude suppress the entire selected s
 test('Analyzer sends only sanitized context and protects all diagnosis text while preserving contracts', async () => {
   const dir=mkdtempSync(join(tmpdir(),'support-policy-'));
   const file=join(dir,'policy.json');writeFileSync(file,JSON.stringify(policy(true)));
-  const config=readConfig({SERVER_API_KEY:'synthetic-server-key-at-least-24',SPLUNK_EXPORT_URL:'https://splunk.example/export',SPLUNK_TOKEN:'synthetic-splunk-token',SPLUNK_INDEX:'gateway',APIC_PLATFORM_URL:'https://analytics.example',APIC_ANALYTICS_SERVICE:'analytics',APIC_ORG:'org',APIC_CATALOG:'cat',APIC_SPEC_URL_TEMPLATE:'https://spec.example/{apiId}',APIC_TOKEN:'synthetic-apic-token',LLM_URL:'https://llm.example/chat',LLM_API_KEY:secret,LLM_MODEL:'test',DATA_POLICY_FILE:file});
+  const config=readConfig({SERVER_API_KEY:'synthetic-server-key-at-least-24',APIC_PLATFORM_URL:'https://analytics.example',APIC_ANALYTICS_SERVICE:'analytics',APIC_ORG:'org',APIC_CATALOG:'cat',APIC_SPEC_URL_TEMPLATE:'https://spec.example/{apiId}',APIC_TOKEN:'synthetic-apic-token',LLM_URL:'https://llm.example/chat',LLM_API_KEY:secret,LLM_MODEL:'test',DATA_POLICY_FILE:file});
   const originals=['AB-12#C','synthetic-customer-payload','synthetic-password','synthetic-enum-allowed','spec-private-description'];
   let outbound='';
   const schema={...spec({code:{type:'string',pattern:'^[A-Z]{2}-[0-9]{2}[A-Z]$',enum:['synthetic-enum-allowed']} }),description:'spec-private-description'};
-  const diagnosis={summary:originals.join(' '),probableCause:originals.join(' '),confidence:'high',evidence:[{logId:'splunk:1',specPointer:'/paths/~1payments/post/requestBody/content/application~1json/schema/properties/code/pattern',explanation:originals.join(' ')}],nextSteps:[originals.join(' ')],missingInformation:[originals.join(' ')]};
+  const diagnosis={summary:originals.join(' '),probableCause:originals.join(' '),confidence:'high',evidence:[{logId:'apic:1',specPointer:'/paths/~1payments/post/requestBody/content/application~1json/schema/properties/code/pattern',explanation:originals.join(' ')}],nextSteps:[originals.join(' ')],missingInformation:[originals.join(' ')]};
   try {
     const analyzer=new Analyzer(config,async(url,init)=>{
       const host=new URL(String(url)).hostname;
-      if(host==='splunk.example')return new Response(JSON.stringify({result:{...data({code:originals[0],password:originals[2],customerData:originals[1]})}}));
-      if(host==='analytics.example')return new Response(JSON.stringify({total:0,events:[]}));
+      if(host==='analytics.example')return new Response(JSON.stringify({total:1,events:[{id:'event-1',global_transaction_id:input.transactionId,datetime:'2026-11-01T09:30:00Z',...data({code:originals[0],password:originals[2],customerData:originals[1]})}]}));
       if(host==='spec.example')return new Response(JSON.stringify(schema));
       outbound=String(init?.body);
       return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(diagnosis)}}]}));
     });
     const result=await analyzer.analyze(input);
     assert.deepEqual(Object.keys(result).sort(),['apiId','diagnosis','sources','transactionId','warnings']);
-    assert.equal(result.diagnosis.evidence[0]?.logId,'splunk:1');
+    assert.equal(result.diagnosis.evidence[0]?.logId,'apic:1');
     assert.equal(result.diagnosis.evidence[0]?.specPointer,diagnosis.evidence[0]?.specPointer);
     assert.ok(outbound.includes('validationFindings'));
     assert.ok(outbound.includes('UU-DD#U'));

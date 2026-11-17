@@ -86,8 +86,9 @@ for (const channel of ['REST', 'MCP'] as const) test(`production runtime: ${chan
   const llmStarted = deferred(); const releaseLlm = deferred();
   const upstream = createServer(async (req, res) => {
     for await (const _chunk of req) { /* consume synthetic request only */ }
-    if (req.url === '/splunk') { res.end(JSON.stringify({ result: { status: 400 } }) + '\n'); return; }
-    if (req.url?.startsWith('/analytics/')) { res.end(JSON.stringify({ total: 0, events: [] })); return; }
+    if (req.url?.startsWith('/analytics/')) { res.end(JSON.stringify({ total: 1, events: [{ id: 'event-1', event: {
+      global_transaction_id: input.transactionId, datetime: '2026-11-01T09:30:00Z', status: 400,
+    } }] })); return; }
     if (req.url?.startsWith('/spec/')) { res.end(JSON.stringify({ openapi: '3.0.3', paths: {} })); return; }
     if (req.url === '/llm') {
       llmStarted.resolve(); await releaseLlm.promise;
@@ -100,7 +101,7 @@ for (const channel of ['REST', 'MCP'] as const) test(`production runtime: ${chan
   const origin = `http://127.0.0.1:${addr.port}`;
   const env = { ...process.env, ...Object.fromEntries(Object.entries(config).map(([k, v]) => [k, String(v)])),
     HOST: '127.0.0.1', PORT: '0', SHUTDOWN_TIMEOUT_MS: '10000', NO_PROXY: '127.0.0.1,localhost,::1',
-    SPLUNK_EXPORT_URL: origin + '/splunk', APIC_PLATFORM_URL: origin, APIC_SPEC_URL_TEMPLATE: origin + '/spec/{apiId}', LLM_URL: origin + '/llm' };
+    APIC_PLATFORM_URL: origin, APIC_SPEC_URL_TEMPLATE: origin + '/spec/{apiId}', LLM_URL: origin + '/llm' };
   // Do not let unrelated host settings introduce external files or real data.
   delete (env as NodeJS.ProcessEnv).DATA_POLICY_FILE;
   const child = spawn(process.execPath, ['--import', 'tsx', 'test/runtime-child.ts'], { env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });

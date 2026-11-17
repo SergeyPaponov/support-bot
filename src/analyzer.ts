@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import { analysisInput, diagnosisSchema, ServiceError, type AnalysisInput, type LogEntry } from './contracts.js';
+import { analysisInput, diagnosisSchema, ServiceError, type AnalysisInput } from './contracts.js';
 import { Providers } from './providers.js';
 import { parseJson, requestText, type Fetch } from './http.js';
 import { loadPolicy, type Policy } from './sanitization/policy.js';
@@ -36,7 +36,7 @@ export class Analyzer {
   private policy: Policy;
   constructor(private config: Config, private fetcher: Fetch = fetch) {
     this.providers = new Providers(config, fetcher);
-    this.secrets = [config.SERVER_API_KEY, config.SPLUNK_TOKEN, config.APIC_TOKEN, config.LLM_API_KEY];
+    this.secrets = [config.SERVER_API_KEY, config.APIC_TOKEN, config.LLM_API_KEY];
     this.policy = loadPolicy(config.DATA_POLICY_FILE);
   }
   async analyze(raw: AnalysisInput) {
@@ -47,10 +47,9 @@ export class Analyzer {
     finally { this.active--; }
   }
   private async run(input: AnalysisInput) {
-    const [splunk, apiConnect, spec] = await Promise.all([
-      this.providers.splunk(input), this.providers.apiConnectEvents(input), this.providers.spec(input.apiId),
+    const [logs, spec] = await Promise.all([
+      this.providers.apiConnectEvents(input), this.providers.spec(input.apiId),
     ]);
-    const logs: LogEntry[] = [...splunk, ...apiConnect];
     if (!logs.length) throw new ServiceError('NO_LOGS', 'No logs found for this transaction and time range', 404);
     const built = await buildDiagnosticContext(input, logs, spec, this.policy, this.secrets);
     try {
@@ -70,12 +69,11 @@ export class Analyzer {
         throw new ServiceError('INVALID_LLM_EVIDENCE', 'LLM cited an unknown log or specification location');
       if (!diagnosis.data.evidence.length) diagnosis.data.confidence = 'low';
       const warnings: string[] = [];
-      if (!splunk.length) warnings.push('No Splunk events found');
-      if (!apiConnect.length) warnings.push('No API Connect Analytics events found; check logging policy, retention and ingestion delay');
       return {
         transactionId: input.transactionId, apiId: input.apiId,
         diagnosis: built.protectDiagnosis(diagnosis.data),
-        sources: { splunk: splunk.length, apiConnect: apiConnect.length, specification: 'API Connect' },
+        // Retain the response shape for existing REST/MCP clients.
+        sources: { splunk: 0, apiConnect: logs.length, specification: 'API Connect' },
         warnings,
       };
     } finally { built.dispose(); }

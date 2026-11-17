@@ -85,7 +85,7 @@ export function createApp(config: Config, analyzer: Pick<Analyzer, 'analyze'> = 
     // A fresh server/transport per request supports stateless Streamable HTTP.
     const server = new McpServer({ name: 'support-bot', version: '0.1.0' });
     server.registerTool('analyze_transaction', {
-      description: 'Analyze Splunk logs and native API Connect Analytics events against an API Connect specification to diagnose an API transaction failure.',
+      description: 'Analyze native API Connect Analytics events against an API Connect specification to diagnose an API transaction failure.',
       inputSchema: { transactionId: z.string(), apiId: z.string(), from: z.string(), to: z.string() },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     }, async input => {

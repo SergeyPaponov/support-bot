@@ -6,7 +6,6 @@ import type { Fetch } from '../src/http.js';
 
 const config = readConfig({
   SERVER_API_KEY: 'test-server-key-at-least-24-chars',
-  SPLUNK_EXPORT_URL: 'https://splunk.example/export', SPLUNK_TOKEN: 'splunk-test-token', SPLUNK_INDEX: 'gateway',
   APIC_PLATFORM_URL: 'https://platform.example', APIC_ANALYTICS_SERVICE: 'analytics-1',
   APIC_ORG: 'provider-org', APIC_CATALOG: 'sandbox', APIC_TOKEN: 'apic-test-token',
   APIC_SPEC_URL_TEMPLATE: 'https://platform.example/api/catalogs/provider-org/sandbox/apis/{apiId}/document',

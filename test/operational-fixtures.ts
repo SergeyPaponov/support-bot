@@ -8,8 +8,7 @@ export const sensitive = ['synthetic-server-credential-123456', 'synthetic-splun
   'private-request-body', 'private-specification', 'private-completion', 'private-prompt',
   'https://upstream.example/path?token=private-query', 'untrusted-error-message'];
 export const config = readConfig({
-  SERVER_API_KEY: sensitive[0], SPLUNK_TOKEN: sensitive[1], APIC_TOKEN: sensitive[2], LLM_API_KEY: sensitive[3],
-  SPLUNK_EXPORT_URL: 'http://127.0.0.1:3999/splunk', SPLUNK_INDEX: 'gateway',
+  SERVER_API_KEY: sensitive[0], APIC_TOKEN: sensitive[2], LLM_API_KEY: sensitive[3],
   APIC_PLATFORM_URL: 'http://127.0.0.1:3999', APIC_ANALYTICS_SERVICE: 'analytics', APIC_ORG: 'org', APIC_CATALOG: 'catalog',
   APIC_SPEC_URL_TEMPLATE: 'http://127.0.0.1:3999/spec/{apiId}', LLM_URL: 'http://127.0.0.1:3999/llm', LLM_MODEL: 'mock',
 });
@@ -27,8 +26,9 @@ export function mockAnalyzer(options: { fail?: boolean } = {}) {
     calls++;
     if (options.fail) throw new Error(sensitive.join(' '));
     const path = new URL(String(url)).pathname;
-    if (path === '/splunk') return new Response(JSON.stringify({ result: { status: 400, customerId: sensitive[6], payload: sensitive[7] } }) + '\n');
-    if (path.startsWith('/analytics/')) return Response.json({ total: 0, events: [] });
+    if (path.startsWith('/analytics/')) return Response.json({ total: 1, events: [{ id: 'event-1', event: {
+      global_transaction_id: input.transactionId, datetime: '2026-11-01T09:30:00Z', status: 400, customerId: sensitive[6], payload: sensitive[7],
+    } }] });
     if (path.startsWith('/spec/')) return Response.json({ openapi: '3.0.3', info: { title: sensitive[8] }, paths: {} });
     if (path === '/llm') return Response.json({ choices: [{ message: { content: JSON.stringify(diagnosis) } }] });
     throw new Error('Unexpected mock route');

@@ -49,6 +49,8 @@ BUILDX_CONFIG=/tmp/support-bot-buildx docker build -f Containerfile \
 npm ci --cache /tmp/support-bot-wp2-npm --no-audit --no-fund
 ```
 
+В этой ветке логи извлекаются только через API Connect Analytics. `SPLUNK_*` не нужны; удалите устаревшие поля из локальных overlays/Secrets при следующем согласованном обновлении. Обязательные credentials: `SERVER_API_KEY`, `APIC_TOKEN`, `LLM_API_KEY`. Поле ответа `sources.splunk` сохраняется со значением `0`.
+
 ## Манифесты и ресурсы
 
 | Файл | Назначение |
@@ -82,7 +84,7 @@ docker push "$SUPPORT_BOT_IMAGE"
 oc project "$SUPPORT_BOT_NAMESPACE"
 ```
 
-Замените placeholders в `configmap.yaml` реальными **несекретными** настройками до применения. Не добавляйте credentials в ConfigMap. Создайте Secret через принятый в организации secure workflow; пример для защищённого файла вне checkout (`chmod 600`, четыре ключа из `secret.example.yaml`):
+Замените placeholders в `configmap.yaml` реальными **несекретными** настройками до применения. Не добавляйте credentials в ConfigMap. Создайте Secret через принятый в организации secure workflow; пример для защищённого файла вне checkout (`chmod 600`, три ключа из `secret.example.yaml`):
 
 ```sh
 oc create secret generic support-bot-secrets \
@@ -148,7 +150,7 @@ oc rollout status deployment/support-bot --timeout=120s
 
 ## Probes, доступ и остановка
 
-Startup и liveness используют существующий публичный `/healthz` (200, `{"status":"ok"}`). Readiness использует публичный `/readyz`: 200 (`{"status":"ready"}`) после успешной проверки локальной конфигурации/policy и открытия listener; 503 (`{"status":"not_ready"}`) при initializing/draining. Readiness не подтверждает доступность Splunk/APIC/LLM, действительность credentials или разрешения сети и не вызывает внешние API. После закрытия listener probe может получить connection refusal вместо HTTP 503 — pod всё равно не Ready.
+Startup и liveness используют существующий публичный `/healthz` (200, `{"status":"ok"}`). Readiness использует публичный `/readyz`: 200 (`{"status":"ready"}`) после успешной проверки локальной конфигурации/policy и открытия listener; 503 (`{"status":"not_ready"}`) при initializing/draining. Readiness не подтверждает доступность APIC/LLM, действительность credentials или разрешения сети и не вызывает внешние API. После закрытия listener probe может получить connection refusal вместо HTTP 503 — pod всё равно не Ready.
 
 Сохраняются `POST /mcp` (stateless Streamable HTTP) и `POST /api/analyze`. Для вызовов нужен существующий Bearer key. Public Route/Ingress, новые auth/RBAC и TLS termination не создаются. Доступ для ручной проверки без Route:
 
@@ -162,7 +164,7 @@ oc logs -f deployment/support-bot
 
 Внутренний Service использует HTTP. При необходимости TLS/mTLS или более строгой namespace isolation используйте одобренные ingress/mesh/network policy решения отдельной задачей.
 
-WP2.2 пишет JSON Lines в stdout (startup, ready, shutdown started/completed, analysis success) и stderr (startup/analysis failure, shutdown timeout). Поля: UTC timestamp, level, event, generated requestId, interface (`process`/`REST`/`MCP`), durationMs, outcome, safe errorCode. Клиентские IDs/headers, URLs, bodies, credentials, события Splunk, specs, LLM prompts/completions и тексты исключений не логируются. Unknown codes → `INTERNAL_ERROR`; startup failures → `STARTUP_FAILED`. MCP logical errors, включая SDK argument validation, считаются failure даже при HTTP 200. Записи синхронные и небольшие; учитывайте возможную задержку event loop при медленном collector.
+WP2.2 пишет JSON Lines в stdout (startup, ready, shutdown started/completed, analysis success) и stderr (startup/analysis failure, shutdown timeout). Поля: UTC timestamp, level, event, generated requestId, interface (`process`/`REST`/`MCP`), durationMs, outcome, safe errorCode. Клиентские IDs/headers, URLs, bodies, credentials, события Analytics, specs, LLM prompts/completions и тексты исключений не логируются. Unknown codes → `INTERNAL_ERROR`; startup failures → `STARTUP_FAILED`. MCP logical errors, включая SDK argument validation, считаются failure даже при HTTP 200. Записи синхронные и небольшие; учитывайте возможную задержку event loop при медленном collector.
 
 SIGINT/SIGTERM немедленно и idempotently включают draining, закрывают admission новых analyses (`503 DRAINING`) и вызывают `server.close()`. Инициализация использует `503 NOT_READY`. Новые TCP connections не принимаются; уже начатые REST/MCP requests получают возможность завершиться, включая analysis после client disconnect. Повторные сигналы не меняют deadline. Shutdown ждёт HTTP close и завершения активных analysis promises; затем `shutdown_completed`, exit 0. Только по истечении `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, exit 1. Smoke harness проверяет idle stop; npm tests также проверяют настоящие SIGTERM во время REST и MCP calls с mock upstream barrier и deadline/repeated signals через injectable clock.
 

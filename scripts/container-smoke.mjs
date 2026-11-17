@@ -19,7 +19,6 @@ function docker(args, input) {
 }
 const env = {
   HOST: '0.0.0.0', PORT: '3000', SERVER_API_KEY: 'wp2-synthetic-server-key-at-least-24',
-  SPLUNK_EXPORT_URL: 'http://127.0.0.1:3999/splunk', SPLUNK_INDEX: 'gateway', SPLUNK_TOKEN: 'wp2-synthetic-splunk-token',
   APIC_PLATFORM_URL: 'http://127.0.0.1:3999', APIC_ANALYTICS_SERVICE: 'analytics', APIC_ORG: 'org', APIC_CATALOG: 'catalog',
   APIC_SPEC_URL_TEMPLATE: 'http://127.0.0.1:3999/spec/{apiId}', APIC_TOKEN: 'wp2-synthetic-apic-token',
   LLM_URL: 'http://127.0.0.1:3999/llm', LLM_API_KEY: 'wp2-synthetic-llm-token', LLM_MODEL: 'mock-model',
@@ -65,22 +64,21 @@ const upstream = createServer(async (req, res) => {
     let text = '';
     for await (const chunk of req) text += chunk;
     res.setHeader('Content-Type','application/json');
-    if (req.url === '/splunk') return res.end(JSON.stringify({result:{status:400,method:'POST',operation_path:'/payments',request_content_type:'application/json',request_body:{accountNumber:raw},message:'pattern validation error'}}));
-    if (req.url.startsWith('/analytics/')) return res.end(JSON.stringify({total:0,events:[]}));
+    if (req.url.startsWith('/analytics/')) return res.end(JSON.stringify({total:1,events:[{id:'event-1',global_transaction_id:input.transactionId,datetime:'2026-11-01T09:30:00Z',status:400,method:'POST',operation_path:'/payments',request_content_type:'application/json',request_body:{accountNumber:raw},message:'pattern validation error'}]}));
     if (req.url.startsWith('/spec/')) return res.end(JSON.stringify(schema));
     assert.equal(req.url, '/llm');
     const body = JSON.parse(text);
     const context = JSON.parse(body.messages.find(m=>m.role==='user').content);
     assert.equal(text.includes(raw),false);
-    assert.equal(text.includes(process.env.SPLUNK_TOKEN),false);
+    assert.equal(text.includes(process.env.APIC_TOKEN),false);
     const finding = context.validationFindings.find(f=>f.constraint==='pattern');
     assert.equal(finding.result,'fail');
-    assert.equal(finding.logId,'splunk:1');
+    assert.equal(finding.logId,'apic:1');
     assert.equal(finding.observed.shape,external?'UU-DD#U':undefined);
     completions++;
     return res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({
       summary:'Invalid account format',probableCause:'Original request violates the local pattern constraint',confidence:'high',
-      evidence:[{logId:'splunk:1',specPointer:finding.specPointer,explanation:'Local pattern validation failed'}],
+      evidence:[{logId:'apic:1',specPointer:finding.specPointer,explanation:'Local pattern validation failed'}],
       nextSteps:['Correct the request format'],missingInformation:[]
     })}}]}));
   } catch (error) { res.statusCode=500;res.end(JSON.stringify({error:'mock assertion failed'}));console.error(error); }

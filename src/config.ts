@@ -10,10 +10,6 @@ const configSchema = z.object({
   HOST: z.string().default('127.0.0.1'),
   PORT: z.coerce.number().int().min(0).max(65535).default(3000),
   SERVER_API_KEY: z.string().min(24),
-  SPLUNK_EXPORT_URL: endpoint,
-  SPLUNK_TOKEN: z.string().min(1),
-  SPLUNK_INDEX: z.string().regex(/^[A-Za-z0-9_-]+$/),
-  SPLUNK_TRANSACTION_FIELD: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.]*$/).default('transactionId'),
   APIC_PLATFORM_URL: endpoint.refine(value => {
     const url = new URL(value);
     return url.pathname === '/' && !url.search;

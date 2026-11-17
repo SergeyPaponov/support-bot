@@ -11,15 +11,14 @@ import { requestText, type Fetch } from '../src/http.js';
 import { redact } from '../src/redact.js';
 
 const config = readConfig({
-  SERVER_API_KEY: 'test-server-key-at-least-24-chars', SPLUNK_EXPORT_URL: 'https://splunk.example/services/search/jobs/export',
-  SPLUNK_TOKEN: 'splunk-credential-123', SPLUNK_INDEX: 'gateway', APIC_PLATFORM_URL: 'https://analytics.example',
+  SERVER_API_KEY: 'test-server-key-at-least-24-chars', APIC_PLATFORM_URL: 'https://analytics.example',
   APIC_ANALYTICS_SERVICE: 'analytics', APIC_ORG: 'provider-org', APIC_CATALOG: 'sandbox', APIC_SPEC_URL_TEMPLATE: 'https://apic.example/apis/{apiId}/document',
   APIC_TOKEN: 'apic-credential-123', LLM_URL: 'https://llm.example/v1/chat/completions', LLM_API_KEY: 'llm-credential-123', LLM_MODEL: 'test-model',
 });
 const input = { transactionId: 'tx-42', apiId: 'payments:1.0', from: '2026-11-01T09:00:00Z', to: '2026-11-01T10:00:00Z' };
 const diagnosis = {
   summary: 'Missing required header', probableCause: 'Gateway rejected a missing X-Client-Id header', confidence: 'high',
-  evidence: [{ logId: 'splunk:1', specPointer: '/paths/~1payments/post', explanation: 'Required header is absent' }],
+  evidence: [{ logId: 'apic:1', specPointer: '/paths/~1payments/post', explanation: 'Required header is absent' }],
   nextSteps: ['Send X-Client-Id'], missingInformation: [],
 };
 type FixtureOptions = { noLogs?: boolean; failAnalytics?: boolean; invalidSpec?: boolean; yaml?: boolean; completion?: unknown; invalidCompletion?: boolean; bigLogs?: boolean };
@@ -28,12 +27,11 @@ function fixture(options: FixtureOptions = {}) {
   const fetcher: Fetch = async (url, init) => {
     calls.push({ url: String(url), init });
     const host = new URL(String(url)).hostname;
-    if (host === 'splunk.example') return new Response(options.noLogs ? '' : JSON.stringify({ result: {
-      transactionId: 'tx-42', status: 400, message: 'Missing X-Client-Id; user@example.com',
+    if (host === 'analytics.example') return new Response(JSON.stringify({ total: options.noLogs ? 0 : 1, events: options.noLogs ? [] : [{ id: 'event-1', event: {
+      global_transaction_id: 'tx-42', datetime: '2026-11-01T09:30:00Z', status_code: '400 Bad Request', error_message: 'Missing X-Client-Id; user@example.com',
       authorization: 'Bearer credential-that-must-not-leak', nested: { password: 'password-that-must-not-leak' },
       payload: options.bigLogs ? 'x'.repeat(170000) : 'non-sensitive',
-    } }) + '\n');
-    if (host === 'analytics.example') return new Response(JSON.stringify({ total: options.noLogs ? 0 : 1, events: options.noLogs ? [] : [{ id: 'event-1', event: { global_transaction_id: 'tx-42', datetime: '2026-11-01T09:30:00Z', status_code: '400 Bad Request' } }] }), { status: options.failAnalytics ? 503 : 200 });
+    } }] }), { status: options.failAnalytics ? 503 : 200 });
     if (host === 'apic.example') return new Response(options.invalidSpec ? '{}' : options.yaml ? 'swagger: "2.0"\npaths:\n  /payments:\n    post: {}\n' : JSON.stringify({ openapi: '3.0.3', paths: { '/payments': { post: { parameters: [{ in: 'header', name: 'X-Client-Id', required: true }] } } } }));
     if (host === 'llm.example') return new Response(JSON.stringify({ choices: [{ message: { content: options.invalidCompletion ? 'not JSON' : JSON.stringify(options.completion ?? diagnosis) } }] }));
     throw new Error('Unexpected URL');
@@ -45,17 +43,36 @@ test('pipeline fetches scoped sources, redacts context, and validates diagnosis'
   const f = fixture();
   const result = await f.analyzer.analyze(input);
   assert.equal(result.diagnosis.probableCause, diagnosis.probableCause);
-  assert.deepEqual(result.sources, { splunk: 1, apiConnect: 1, specification: 'API Connect' });
-  const splunk = f.calls.find(c => c.url.includes('splunk.example'))!;
-  const search = new URLSearchParams(String(splunk.init?.body));
-  assert.match(search.get('search')!, /transactionId="tx-42"/);
-  assert.equal(search.get('earliest_time'), input.from);
+  assert.deepEqual(result.sources, { splunk: 0, apiConnect: 1, specification: 'API Connect' });
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(f.calls.map(c => new URL(c.url).hostname).sort(), ['analytics.example', 'apic.example', 'llm.example']);
+  const analytics = new URL(f.calls.find(c => new URL(c.url).hostname === 'analytics.example')!.url);
+  assert.equal(analytics.searchParams.get('global_transaction_id'), 'equals:tx-42');
+  assert.equal(analytics.searchParams.get('start'), input.from);
   assert.match(f.calls.find(c => c.url.includes('apic.example'))!.url, /payments%3A1.0/);
   const context = String(f.calls.find(c => c.url.includes('llm.example'))!.init?.body);
   assert.ok(!context.includes('credential-that-must-not-leak'));
   assert.ok(!context.includes('password-that-must-not-leak'));
   assert.ok(!context.includes('user@example.com'));
   assert.match(context, /diagnosticSignals/);
+});
+test('legacy Splunk settings are ignored and cannot trigger a Splunk request', async () => {
+  const env = Object.fromEntries(Object.entries(config).map(([k, v]) => [k, String(v)]));
+  const parsed = readConfig({ ...env, SPLUNK_EXPORT_URL: 'not-a-url', SPLUNK_TOKEN: '', SPLUNK_INDEX: '' });
+  assert.equal('SPLUNK_EXPORT_URL' in parsed, false);
+  const f = fixture();
+  const result = await new Analyzer(parsed, f.fetcher).analyze(input);
+  assert.equal(result.sources.splunk, 0);
+  assert.ok(f.calls.every(c => !c.url.includes('splunk')));
+});
+test('empty Analytics returns NO_LOGS and never invokes the LLM', async () => {
+  const f = fixture({ noLogs: true });
+  await assert.rejects(() => f.analyzer.analyze(input), { code: 'NO_LOGS', status: 404 });
+  assert.ok(f.calls.every(c => !c.url.includes('llm.example')));
+});
+test('obsolete Splunk evidence is rejected when only Analytics events exist', async () => {
+  const f = fixture({ completion: { ...diagnosis, evidence: [{ ...diagnosis.evidence[0], logId: 'splunk:1' }] } });
+  await assert.rejects(() => f.analyzer.analyze(input), { code: 'INVALID_LLM_EVIDENCE' });
 });
 test('Swagger YAML is accepted', async () => { assert.equal((await fixture({ yaml: true }).analyzer.analyze(input)).diagnosis.confidence, 'high'); });
 test('invalid input and query injection are rejected before any requests', async () => {

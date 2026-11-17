@@ -4,16 +4,16 @@ TypeScript-сервер диагностики API-транзакций. Оди�
 
 Контейнеризация и ручное развёртывание на OpenShift: [WP2: build, manifests, policy/CA mounts и проверки](deploy/openshift/README.md). Production image собирается через `docker build -f Containerfile -t support-bot:wp2 .`; повторяемый container smoke test — `node scripts/container-smoke.mjs support-bot:wp2`.
 
-Целевая версия: **API Connect 10.0.8.10**. Источники — Splunk и нативный Analytics API API Connect, доступный через Platform API host (тот же API используется интерфейсом API Manager). Management API предоставляет спецификации. Прямое подключение к DataPower больше не требуется. LLM-коннектор по умолчанию использует OpenAI-compatible Chat Completions.
+Целевая версия: **API Connect 10.0.8.10**. Источник логов — только нативный Analytics API API Connect, доступный через Platform API host (тот же API используется интерфейсом API Manager). Management API предоставляет спецификации. Прямое подключение к DataPower больше не требуется. LLM-коннектор по умолчанию использует OpenAI-compatible Chat Completions.
+
+В этой ветке Splunk полностью исключён из извлечения логов: `SPLUNK_*` не требуются и игнорируются, запросы в Splunk не выполняются. Для совместимости REST/MCP поле `sources.splunk` сохранено и всегда равно `0`; evidence ссылается на `apic:*`. Пустой Analytics возвращает `404 NO_LOGS`, ошибка Analytics прерывает анализ; fallback на другой источник отсутствует. Получение спецификации, sanitization policy, LLM-анализ, auth, operational logging и graceful shutdown не изменены.
 
 ```mermaid
 flowchart LR
   Client[HTTP или MCP клиент] --> Server[Support Bot]
-  Server --> Splunk[Splunk Search Export]
   Server --> Analytics[API Connect Analytics: события транзакций]
   Server --> APIC[API Connect: Swagger / OpenAPI]
-  Splunk --> Context[Маскирование и сбор контекста]
-  Analytics --> Context
+  Analytics --> Context[Маскирование и сбор контекста]
   APIC --> Context
   Context --> LLM[LLM HTTP-коннектор]
   LLM --> Validate[Проверка JSON и ссылок на данные]
@@ -37,9 +37,9 @@ npm run dev
 
 Операционные события записываются как JSON Lines: `timestamp` (UTC), `level`, `event`, `requestId`, `interface` (`process`, `REST`, `MCP`), `durationMs`, `outcome`, `errorCode` (`null` при успехе). ID генерируется сервером через UUID, не берётся из клиентского заголовка, JSON-RPC ID или transaction ID. Startup/ready используют общий ID, shutdown started/completed/timeout — другой общий ID; каждый REST request / MCP analysis call имеет собственный ID. Normal events идут в stdout, failures/timeouts — в stderr. Записи небольшие и синхронные, чтобы финальное событие не терялось при exit; медленный log collector может задерживать event loop.
 
-Logger принимает только фиксированные события и коды: credentials, headers, transaction/customer/API IDs, request/response bodies, Splunk events, specs, prompts/completions, URLs и тексты исключений в него не передаются. Неизвестный код заменяется на `INTERNAL_ERROR`; startup failure сообщает только `STARTUP_FAILED`. Это allowlist metadata, а не попытка отредактировать произвольный текст. MCP `isError` и отказы SDK при проверке arguments логируются как failures даже при HTTP 200; успешные initialize/tools/list не считаются анализом. Health/readiness probes не создают analysis logs. REST/MCP auth/body/Origin rejections также дают безопасное failure-событие.
+Logger принимает только фиксированные события и коды: credentials, headers, transaction/customer/API IDs, request/response bodies, Analytics events, specs, prompts/completions, URLs и тексты исключений в него не передаются. Неизвестный код заменяется на `INTERNAL_ERROR`; startup failure сообщает только `STARTUP_FAILED`. Это allowlist metadata, а не попытка отредактировать произвольный текст. MCP `isError` и отказы SDK при проверке arguments логируются как failures даже при HTTP 200; успешные initialize/tools/list не считаются анализом. Health/readiness probes не создают analysis logs. REST/MCP auth/body/Origin rejections также дают безопасное failure-событие.
 
-Lifecycle — injectable instance state: initializing → ready → draining → stopped. Config и sanitization policy проверяются до ready. Readiness не выполняет исходящие запросы к Splunk/APIC/LLM, не раскрывает их состояние и не меняет существующие sanitization/auth controls. При draining новый REST/MCP analysis отклоняется с HTTP 503 и безопасным error envelope (`DRAINING`; до ready — `NOT_READY`). Результаты уже начатых анализов и обычные MCP `isError` contracts сохраняются.
+Lifecycle — injectable instance state: initializing → ready → draining → stopped. Config и sanitization policy проверяются до ready. Readiness не выполняет исходящие запросы к APIC/LLM, не раскрывает их состояние и не меняет существующие sanitization/auth controls. При draining новый REST/MCP analysis отклоняется с HTTP 503 и безопасным error envelope (`DRAINING`; до ready — `NOT_READY`). Результаты уже начатых анализов и обычные MCP `isError` contracts сохраняются.
 
 SIGINT/SIGTERM синхронно включают draining и вызывают HTTP `server.close()`. Новые соединения перестают приниматься; уже начатые REST/MCP analyses, включая обработку после отключения клиента, могут закончить работу. Shutdown ждёт и завершения HTTP responses, и активных analysis promises. Повторные сигналы не запускают новый timer и не сокращают deadline. По завершении — `shutdown_completed`, exit 0. Только после истечения `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, процесс завершается с exit 1.
 
@@ -76,14 +76,14 @@ curl http://127.0.0.1:3000/api/analyze \
     "probableCause": "Gateway отклонил запрос без X-Client-Id",
     "confidence": "high",
     "evidence": [{
-      "logId": "splunk:1",
+      "logId": "apic:1",
       "specPointer": "/paths/~1payments/post",
       "explanation": "Лог сообщает об отсутствии заголовка, обязательного для операции"
     }],
     "nextSteps": ["Проверить передачу X-Client-Id клиентом"],
     "missingInformation": []
   },
-  "sources": { "splunk": 1, "apiConnect": 1, "specification": "API Connect" },
+  "sources": { "splunk": 0, "apiConnect": 1, "specification": "API Connect" },
   "warnings": []
 }
 ```
@@ -113,7 +113,6 @@ URL: `http://127.0.0.1:3000/mcp`, transport: Streamable HTTP, заголовок
 
 ## Контракты интеграций и текущие ограничения
 
-- **Splunk**: нативный POST `/services/search/jobs/export`, `Authorization: Splunk ...`, form-urlencoded `search`, `earliest_time`, `latest_time`, `output_mode=json`, `preview=false`. Ответ — JSON Lines с `result`. Индекс и поле транзакции задаёт администратор. На источник максимум 200 событий; при превышении нужно сузить диапазон.
 - **API Connect Analytics**: нативный `GET /analytics/{service}/catalogs/{org}/{catalog}/events` на `APIC_PLATFORM_URL`, заголовки `Authorization: Bearer <APIC_TOKEN>` и `Accept: application/json`. Параметры `start`, `end`, `global_transaction_id=equals:<transactionId>` (либо `transaction_id`, если настроено `APIC_TRANSACTION_FIELD`), `limit=100`, `offset`. Точное сравнение через `equals:` не позволяет трактовать ID как оператор поиска. Ответ `{total, events: [...]}`; поддерживаются документированный формат `{id, event: {...}}` и плоские события. Повторно проверяются ID транзакции и `datetime`; ID должен соответствовать выбранному полю. По умолчанию используйте `X-Global-Transaction-Id` / `global_transaction_id`, а не произвольный correlation header. Пагинация обрабатывается до полного набора, максимум 200 событий и 20 запросов. Изменение total, дубликаты ID или неполная выборка дают ошибку, а не частичный диагноз. Требуется право `api-analytics:view` в каталоге. API Connect Analytics должен быть настроен на сохранение событий; доступность payload/headers зависит от activity-log policy, retention и задержки ingestion. Это события API-вызовов, а не системный журнал Manager pod. Если нужны именно системные логи Manager, их нужно получать через платформенную систему логирования, например Splunk.
 - **API Connect**: GET по `APIC_SPEC_URL_TEMPLATE`; `{apiId}` URL-кодируется. Шаблон должен указывать на нативный endpoint получения документа, с нужными provider org/catalog/API/version. Ожидается сырой Swagger 2.0 или OpenAPI 3.0/3.1 в JSON/YAML, не ZIP или объект-обёртка. Используется готовый Bearer token; login/refresh, discovery API и выбор catalog пока не реализованы. Внешние `$ref` не загружаются. Для каталога v10 нативный маршрут — `/api/catalogs/{org}/{catalog}/apis/{api-id}/document`; он указан в `.env.example`. Требуется право `product:view`. Выбор org/catalog/service задаёт администратор через конфигурацию; динамический выбор каталога клиентом не реализован.
 - **LLM**: OpenAI-compatible Chat Completions API: `model`, `messages`, `response_format=json_object`, `temperature=0`, `max_tokens=2500`; ответ `choices[0].message.content` содержит JSON диагноза. Если ваш коннектор имеет другой контракт, меняется слой `Analyzer`, остальные источники независимы.
@@ -122,7 +121,7 @@ URL: `http://127.0.0.1:3000/mcp`, transport: Streamable HTTP, заголовок
 
 Перед отправкой LLM применяется default-deny политика из `config/sanitization-policy.json`. В контекст попадают только разрешённые диагностические поля, безопасная структура спецификации и findings локальной валидации. Произвольный текст сообщений и полные request/response bodies по умолчанию не передаются. Подробности настройки и ограничения описаны ниже. Логи и спецификации остаются недоверенными данными; prompt запрещает выполнять инструкции из них. Исходные данные и тела ошибок внешних сервисов не пишутся в консоль.
 
-Тесты выполняют локальный HTTP/MCP handshake и весь pipeline на имитациях Splunk, API Connect Analytics, API Connect Management и LLM; реальные системы и качество диагностики реальной модели требуют отдельной интеграционной проверки.
+Тесты выполняют локальный HTTP/MCP handshake и весь pipeline на имитациях API Connect Analytics, API Connect Management и LLM; реальные системы и качество диагностики реальной модели требуют отдельной интеграционной проверки.
 
 Добавление следующего инструмента: отдельный сервис обработки и `server.registerTool(...)` в `src/app.ts`. Общие сетевые ограничения находятся в `src/http.ts`, адаптеры источников — в `src/providers.ts`.
 
@@ -136,7 +135,7 @@ URL: `http://127.0.0.1:3000/mcp`, transport: Streamable HTTP, заголовок
 
 ## WP1: policy-based sanitization и локальная диагностика HTTP 400
 
-`src/sanitization/context-builder.ts` заменяет прежнюю отправку отредактированных логов целиком. Провайдеры, MCP `analyze_transaction`, stateless transport и REST `POST /api/analyze` сохраняются. Findings добавляются **во внутренний LLM-контекст**, а не в публичную схему ответа. Сохраняются source counts, evidence IDs (`splunk:1`, `apic:1`), JSON pointers, сетевые таймауты, лимит concurrency и проверка ответа LLM. Существование evidence pointer проверяется локально в оригинальной спецификации: скрытие schema contents не делает исходный pointer невалидным. Оригинальный документ при этом не отправляется LLM.
+`src/sanitization/context-builder.ts` заменяет прежнюю отправку отредактированных логов целиком. Провайдеры, MCP `analyze_transaction`, stateless transport и REST `POST /api/analyze` сохраняются. Findings добавляются **во внутренний LLM-контекст**, а не в публичную схему ответа. Сохраняются структура source counts, evidence IDs (`apic:1`), JSON pointers, сетевые таймауты, лимит concurrency и проверка ответа LLM. Существование evidence pointer проверяется локально в оригинальной спецификации: скрытие schema contents не делает исходный pointer невалидным. Оригинальный документ при этом не отправляется LLM.
 
 Порядок обработки: получить источники → проверить оригинальные значения в памяти → выбрать разрешённые поля → сформировать безопасные shape/validation findings → отправить безопасный контекст LLM → проверить контракт и evidence ответа → удалить совпадения с защищёнными значениями из текстов диагноза. Оригиналы не заменяются масками до локальной валидации. Request-local данные защиты очищаются в `finally`; payloads и соответствия не записываются в файлы, логи или внешние хранилища.
 
@@ -199,7 +198,7 @@ DATA_POLICY_FILE=/etc/support-bot/sanitization-policy.json npm start
 
 ### Контракт извлечения и локальная валидация
 
-Поддерживаемый структурированный envelope в Splunk result или API Connect `event`:
+Поддерживаемый структурированный envelope в API Connect `event` (также поддерживаются плоские Analytics events):
 
 ```json
 {
@@ -213,7 +212,7 @@ DATA_POLICY_FILE=/etc/support-bot/sanitization-policy.json npm start
 
 `request_body` может быть объектом или JSON-строкой. Допускается `request_method` вместо `method`; при наличии обоих они должны совпадать без учёта регистра. `operation_path` должен **точно** совпадать с ключом в `spec.paths` (включая templated path). Сервис не угадывает операцию из URL, query, correlation ID или похожего API. MIME берётся из `request_content_type`, без parameters, и должен явно соответствовать выбранному JSON media type. Нет надёжного mapping — `not_evaluated`, анализ продолжается. Это не проверка согласованности API с транзакцией.
 
-Для структурированного JSON в Splunk `_raw` дополнительно задайте `sanitize_nested` для `/logs/*/data/_raw` и `/logs/*/data/_raw/request_body`, а также `shape_and_validate` для нужных потомков. Providers не меняются. Сломанный JSON или превышение лимита поля даёт protected parsing-marker; сырая строка не используется как fallback. `freeText: classify` передаёт только заранее заданные сигналы required/format/length/enum/type/HTTP 400 для выбранных message-полей. `freeText: exclude` удаляет их. Text-classification — наблюдение над текстом сообщения, не результат детерминированной schema validation.
+Для структурированного JSON в поле Analytics `_raw` дополнительно задайте `sanitize_nested` для `/logs/*/data/_raw` и `/logs/*/data/_raw/request_body`, а также `shape_and_validate` для нужных потомков. Providers не меняются. Сломанный JSON или превышение лимита поля даёт protected parsing-marker; сырая строка не используется как fallback. `freeText: classify` передаёт только заранее заданные сигналы required/format/length/enum/type/HTTP 400 для выбранных message-полей. `freeText: exclude` удаляет их. Text-classification — наблюдение над текстом сообщения, не результат детерминированной schema validation.
 
 Поддерживаемый subset:
 

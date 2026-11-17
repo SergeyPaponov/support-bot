@@ -7,9 +7,6 @@ metadata:
 data:
   HOST: "0.0.0.0"
   PORT: "3000"
-  SPLUNK_EXPORT_URL: "https://splunk.example.com:8089/services/search/jobs/export"
-  SPLUNK_INDEX: "gateway"
-  SPLUNK_TRANSACTION_FIELD: "transactionId"
   APIC_PLATFORM_URL: "https://apic-platform.example.com"
   APIC_ANALYTICS_SERVICE: "analytics-service-name-or-id"
   APIC_ORG: "provider-org-name-or-id"
