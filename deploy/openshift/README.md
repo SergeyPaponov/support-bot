@@ -1,6 +1,6 @@
 # WP2: OpenShift deployment
 
-Манифесты и Containerfile подготовлены на основе WP1 (`dff23c3`). Бизнес-логика, providers, sanitization, MCP transport и public contracts не изменены. Команды ниже предназначены для ручного выполнения оператором; никакого автоматического deploy/merge нет.
+Манифесты и Containerfile подготовлены на основе WP1 (`dff23c3`). Бизнес-логика, providers, sanitization и REST contracts сохранены; в текущей ветке MCP server и transport удалены. Команды ниже предназначены для ручного выполнения оператором; никакого автоматического deploy/merge нет.
 
 ## Сборка production-образа
 
@@ -152,7 +152,7 @@ oc rollout status deployment/support-bot --timeout=120s
 
 Startup и liveness используют существующий публичный `/healthz` (200, `{"status":"ok"}`). Readiness использует публичный `/readyz`: 200 (`{"status":"ready"}`) после успешной проверки локальной конфигурации/policy и открытия listener; 503 (`{"status":"not_ready"}`) при initializing/draining. Readiness не подтверждает доступность APIC/LLM, действительность credentials или разрешения сети и не вызывает внешние API. После закрытия listener probe может получить connection refusal вместо HTTP 503 — pod всё равно не Ready.
 
-Сохраняются `POST /mcp` (stateless Streamable HTTP) и `POST /api/analyze`. Для вызовов нужен существующий Bearer key. Public Route/Ingress, новые auth/RBAC и TLS termination не создаются. Доступ для ручной проверки без Route:
+Сервис обслуживает только REST `POST /api/analyze` и публичные `GET /healthz`, `GET /readyz`. MCP endpoint `/mcp` удалён. Для вызовов нужен существующий Bearer key. Public Route/Ingress, новые auth/RBAC и TLS termination не создаются. Доступ для ручной проверки без Route:
 
 ```sh
 oc port-forward service/support-bot 3000:3000
@@ -164,17 +164,21 @@ oc logs -f deployment/support-bot
 
 Внутренний Service использует HTTP. При необходимости TLS/mTLS или более строгой namespace isolation используйте одобренные ingress/mesh/network policy решения отдельной задачей.
 
-WP2.2 пишет JSON Lines в stdout (startup, ready, shutdown started/completed, analysis success) и stderr (startup/analysis failure, shutdown timeout). Поля: UTC timestamp, level, event, generated requestId, interface (`process`/`REST`/`MCP`), durationMs, outcome, safe errorCode. Клиентские IDs/headers, URLs, bodies, credentials, события Analytics, specs, LLM prompts/completions и тексты исключений не логируются. Unknown codes → `INTERNAL_ERROR`; startup failures → `STARTUP_FAILED`. MCP logical errors, включая SDK argument validation, считаются failure даже при HTTP 200. Записи синхронные и небольшие; учитывайте возможную задержку event loop при медленном collector.
+WP2.2 пишет JSON Lines в stdout (startup, ready, shutdown started/completed, analysis success) и stderr (startup/analysis failure, shutdown timeout). Поля: UTC timestamp, level, event, generated requestId, interface (`process`/`REST`), durationMs, outcome, safe errorCode. Клиентские IDs/headers, URLs, bodies, credentials, события Analytics, specs, LLM prompts/completions и тексты исключений не логируются. Unknown codes → `INTERNAL_ERROR`; startup failures → `STARTUP_FAILED`. Записи синхронные и небольшие; учитывайте возможную задержку event loop при медленном collector.
 
-SIGINT/SIGTERM немедленно и idempotently включают draining, закрывают admission новых analyses (`503 DRAINING`) и вызывают `server.close()`. Инициализация использует `503 NOT_READY`. Новые TCP connections не принимаются; уже начатые REST/MCP requests получают возможность завершиться, включая analysis после client disconnect. Повторные сигналы не меняют deadline. Shutdown ждёт HTTP close и завершения активных analysis promises; затем `shutdown_completed`, exit 0. Только по истечении `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, exit 1. Smoke harness проверяет idle stop; npm tests также проверяют настоящие SIGTERM во время REST и MCP calls с mock upstream barrier и deadline/repeated signals через injectable clock.
+SIGINT/SIGTERM немедленно и idempotently включают draining, закрывают admission новых analyses (`503 DRAINING`) и вызывают `server.close()`. Инициализация использует `503 NOT_READY`. Новые TCP connections не принимаются; уже начатые REST requests получают возможность завершиться, включая analysis после client disconnect. Повторные сигналы не меняют deadline. Shutdown ждёт HTTP close и завершения активных analysis promises; затем `shutdown_completed`, exit 0. Только по истечении `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, exit 1. Smoke harness проверяет idle stop; npm tests также проверяют настоящие SIGTERM во время REST calls с mock upstream barrier и deadline/repeated signals через injectable clock.
 
 Default `SHUTDOWN_TIMEOUT_MS=90000` задан в ConfigMap; `terminationGracePeriodSeconds=105` даёт дополнительный запас. Это **best-effort operational budget**, не гарантия zero-downtime: pagination и последовательные upstream стадии могут превысить deadline; SIGKILL/OOM/event-loop stalls могут помешать graceful shutdown. При override согласуйте grace period и rollout timeout. Не изменены upstream timeout (20000 ms), fail-fast provider behavior, retries и business/sanitization semantics. ConfigMap/Secret updates требуют restart, как и прежде.
 
-## Выполненная проверка и ограничения
+## Проверка текущей ветки
+
+HTTP-only версия: установка по lockfile без MCP SDK, `npm run typecheck`, `npm run build`, `npm test` — **83 passed, 0 failed**. Проверены REST contracts, health/readiness, operational logging, SIGTERM и отсутствие MCP endpoint на mock upstreams. Container smoke harness обновлён для REST-only, но образ в этой итерации не пересобирался и container smoke / OpenShift admission повторно не запускались.
+
+## Историческая проверка WP2 и ограничения
 
 - `npm ci` по lockfile (с writable cache в `/tmp`), `npm run typecheck`, `npm run build`, `npm test`: **63 passed, 0 failed**.
 - Production image собран Docker/BuildKit с Node.js 24; TLS verification сохранена, build CA передан secret mount.
-- `scripts/container-smoke.mjs`: встроенная и custom mounted policies, реальный production entrypoint, UID `1000770001`, read-only filesystem, dropped capabilities, REST и MCP initialize/tools/list/tools/call. Все внешние API в harness имитируются внутри контейнера; WP1 pattern validation и отсутствие raw sensitive values в LLM body проверяются.
+- `scripts/container-smoke.mjs`: встроенная и custom mounted policies, реальный production entrypoint, UID `1000770001`, read-only filesystem, dropped capabilities и analysis calls. Все внешние API в harness имитируются внутри контейнера; WP1 pattern validation и отсутствие raw sensitive values в LLM body проверяются.
 - Invalid mounted policy: startup exit 1 без fallback. SIGTERM для валидных конфигураций: exit 0.
 - Runtime metadata/filesystem проверены на отсутствие embedded credential env, `.env`, source/test/dev dependencies и build CA. Дополнительно synthetic canaries из исключённых `.env` и nondefault config файлов не найдены в сохранённых runtime image layers. Это проверка build boundary, не универсальный независимый secrets/vulnerability audit всех upstream dependencies.
 - Runtime HTTPS через существующий cloud proxy с read-only CA mount вернул HTTP 200 при включённой проверке TLS.

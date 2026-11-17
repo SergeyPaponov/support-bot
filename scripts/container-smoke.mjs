@@ -40,8 +40,6 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadPolicy } from './dist/src/sanitization/policy.js';
 
 assert.equal(process.getuid(), 1000770001);
@@ -85,7 +83,6 @@ const upstream = createServer(async (req, res) => {
 });
 upstream.listen(3999,'127.0.0.1'); await once(upstream,'listening');
 const headers={authorization:'Bearer '+process.env.SERVER_API_KEY,'content-type':'application/json'};
-const client=new Client({name:'container-smoke',version:'1.0.0'});
 try {
   let health;
   for(let i=0;i<50;i++){
@@ -96,16 +93,14 @@ try {
   assert.equal((await fetch('http://127.0.0.1:3000/readyz')).status,200);
   const response=await fetch('http://127.0.0.1:3000/api/analyze',{method:'POST',headers,body:JSON.stringify(input)});
   assert.equal(response.status,200);
-  assert.equal((await response.json()).transactionId,input.transactionId);
-  await client.connect(new StreamableHTTPClientTransport(new URL('http://127.0.0.1:3000/mcp'),{requestInit:{headers}}));
-  const list=await client.listTools();assert.equal(list.tools[0].name,'analyze_transaction');
-  const result=await client.callTool({name:'analyze_transaction',arguments:input});
-  assert.ok(!result.isError);
-  assert.equal(result.structuredContent.transactionId,input.transactionId);
-  assert.equal(completions,2);
+  const result=await response.json();
+  assert.equal(result.transactionId,input.transactionId);
+  assert.equal(completions,1);
   assert.equal(JSON.stringify(result).includes(raw),false);
-  console.log((external?'Mounted':'Built-in')+' policy: loaded; REST + MCP initialize/list/call + local validation + arbitrary UID/read-only filesystem: PASS');
-} finally {await client.close();upstream.closeAllConnections();await new Promise(r=>upstream.close(r));}
+  const removed=await fetch('http://127.0.0.1:3000/mcp',{method:'POST',headers,body:'{}'});
+  assert.equal(removed.status,404);
+  console.log((external?'Mounted':'Built-in')+' policy: loaded; REST + local validation + removed MCP endpoint + arbitrary UID/read-only filesystem: PASS');
+} finally {upstream.closeAllConnections();await new Promise(r=>upstream.close(r));}
 `;
 try {
   const inspect = JSON.parse(docker(['image', 'inspect', image]))[0];

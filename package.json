@@ -1,5 +1,5 @@
 {
-  "name": "support-bot-mcp",
+  "name": "support-bot-http",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
     "express": "^5.1.0",
     "yaml": "^2.8.0",
     "zod": "^3.25.0"

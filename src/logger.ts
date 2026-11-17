@@ -7,12 +7,12 @@ import { ServiceError } from './contracts.js';
 const events = ['startup', 'ready', 'startup_failed', 'shutdown_started', 'shutdown_completed', 'shutdown_timeout',
   'analysis_completed', 'analysis_failed'] as const;
 const codes = new Set(['STARTUP_FAILED', 'SHUTDOWN_TIMEOUT', 'INTERNAL_ERROR', 'INVALID_INPUT', 'INVALID_BODY',
-  'UNAUTHORIZED', 'ORIGIN_FORBIDDEN', 'NOT_READY', 'DRAINING', 'MCP_PROTOCOL_ERROR', 'BUSY', 'NO_LOGS',
+  'UNAUTHORIZED', 'ORIGIN_FORBIDDEN', 'NOT_READY', 'DRAINING', 'BUSY', 'NO_LOGS',
   'CONTEXT_TOO_LARGE', 'INVALID_LLM_EVIDENCE', 'INVALID_LLM_RESPONSE', 'INVALID_SPEC', 'LOG_LIMIT_EXCEEDED',
   'APIC_EVENT_SCOPE_MISMATCH', 'APIC_INCOMPLETE_RESULTS', 'APIC_RESULTS_CHANGED', 'SPLUNK_SEARCH_ERROR',
   'UPSTREAM_EMPTY', 'UPSTREAM_HTTP_ERROR', 'UPSTREAM_INVALID_RESPONSE', 'UPSTREAM_TOO_LARGE', 'UPSTREAM_UNAVAILABLE']);
 type Event = typeof events[number];
-type Interface = 'process' | 'REST' | 'MCP';
+type Interface = 'process' | 'REST';
 type Outcome = 'started' | 'success' | 'failure' | 'timeout';
 
 function allowedCode(code: unknown): string {
@@ -47,7 +47,7 @@ export function createLogger(options: {
           const level = safeOutcome === 'failure' || safeOutcome === 'timeout' ? 'error' : 'info';
           const record = {
             timestamp: (options.timestamp?.() ?? new Date()).toISOString(), level, event: safeEvent, requestId,
-            interface: ['REST', 'MCP'].includes(channel) ? channel : 'process',
+            interface: channel === 'REST' ? channel : 'process',
             durationMs: Math.max(0, Math.round(now() - started)), outcome: safeOutcome,
             errorCode: errorCode === null && level === 'info' ? null : allowedCode(errorCode),
           };

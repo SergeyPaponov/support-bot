@@ -1,16 +1,16 @@
-# Support Bot MCP Server
+# Support Bot HTTP Server
 
-TypeScript-сервер диагностики API-транзакций. Один сервис анализа доступен как MCP-инструмент `analyze_transaction` через Streamable HTTP (`POST /mcp`) и как обычный HTTP API (`POST /api/analyze`).
+TypeScript-сервер диагностики API-транзакций. Сервис анализа доступен только через HTTP REST API (`POST /api/analyze`). MCP server, transport и SDK удалены; маршрут `/mcp` больше не обслуживается. Публичные `GET /healthz` и `GET /readyz` сохранены.
 
 Контейнеризация и ручное развёртывание на OpenShift: [WP2: build, manifests, policy/CA mounts и проверки](deploy/openshift/README.md). Production image собирается через `docker build -f Containerfile -t support-bot:wp2 .`; повторяемый container smoke test — `node scripts/container-smoke.mjs support-bot:wp2`.
 
 Целевая версия: **API Connect 10.0.8.10**. Источник логов — только нативный Analytics API API Connect, доступный через Platform API host (тот же API используется интерфейсом API Manager). Management API предоставляет спецификации. Прямое подключение к DataPower больше не требуется. LLM-коннектор по умолчанию использует OpenAI-compatible Chat Completions.
 
-В этой ветке Splunk полностью исключён из извлечения логов: `SPLUNK_*` не требуются и игнорируются, запросы в Splunk не выполняются. Для совместимости REST/MCP поле `sources.splunk` сохранено и всегда равно `0`; evidence ссылается на `apic:*`. Пустой Analytics возвращает `404 NO_LOGS`, ошибка Analytics прерывает анализ; fallback на другой источник отсутствует. Получение спецификации, sanitization policy, LLM-анализ, auth, operational logging и graceful shutdown не изменены.
+В этой ветке Splunk полностью исключён из извлечения логов: `SPLUNK_*` не требуются и игнорируются, запросы в Splunk не выполняются. Для совместимости REST поле `sources.splunk` сохранено и всегда равно `0`; evidence ссылается на `apic:*`. Пустой Analytics возвращает `404 NO_LOGS`, ошибка Analytics прерывает анализ; fallback на другой источник отсутствует. Получение спецификации, sanitization policy, LLM-анализ, auth, operational logging и graceful shutdown не изменены.
 
 ```mermaid
 flowchart LR
-  Client[HTTP или MCP клиент] --> Server[Support Bot]
+  Client[HTTP клиент] --> Server[Support Bot]
   Server --> Analytics[API Connect Analytics: события транзакций]
   Server --> APIC[API Connect: Swagger / OpenAPI]
   Analytics --> Context[Маскирование и сбор контекста]
@@ -35,17 +35,17 @@ npm run dev
 
 ### WP2.2: operational logging и lifecycle
 
-Операционные события записываются как JSON Lines: `timestamp` (UTC), `level`, `event`, `requestId`, `interface` (`process`, `REST`, `MCP`), `durationMs`, `outcome`, `errorCode` (`null` при успехе). ID генерируется сервером через UUID, не берётся из клиентского заголовка, JSON-RPC ID или transaction ID. Startup/ready используют общий ID, shutdown started/completed/timeout — другой общий ID; каждый REST request / MCP analysis call имеет собственный ID. Normal events идут в stdout, failures/timeouts — в stderr. Записи небольшие и синхронные, чтобы финальное событие не терялось при exit; медленный log collector может задерживать event loop.
+Операционные события записываются как JSON Lines: `timestamp` (UTC), `level`, `event`, `requestId`, `interface` (`process`, `REST`), `durationMs`, `outcome`, `errorCode` (`null` при успехе). ID генерируется сервером через UUID, не берётся из клиентского заголовка или transaction ID. Startup/ready используют общий ID, shutdown started/completed/timeout — другой общий ID; каждый REST request имеет собственный ID. Normal events идут в stdout, failures/timeouts — в stderr. Записи небольшие и синхронные, чтобы финальное событие не терялось при exit; медленный log collector может задерживать event loop.
 
-Logger принимает только фиксированные события и коды: credentials, headers, transaction/customer/API IDs, request/response bodies, Analytics events, specs, prompts/completions, URLs и тексты исключений в него не передаются. Неизвестный код заменяется на `INTERNAL_ERROR`; startup failure сообщает только `STARTUP_FAILED`. Это allowlist metadata, а не попытка отредактировать произвольный текст. MCP `isError` и отказы SDK при проверке arguments логируются как failures даже при HTTP 200; успешные initialize/tools/list не считаются анализом. Health/readiness probes не создают analysis logs. REST/MCP auth/body/Origin rejections также дают безопасное failure-событие.
+Logger принимает только фиксированные события и коды: credentials, headers, transaction/customer/API IDs, request/response bodies, Analytics events, specs, prompts/completions, URLs и тексты исключений в него не передаются. Неизвестный код заменяется на `INTERNAL_ERROR`; startup failure сообщает только `STARTUP_FAILED`. Это allowlist metadata, а не попытка отредактировать произвольный текст. Health/readiness probes не создают analysis logs. REST auth/body/Origin rejections также дают безопасное failure-событие.
 
-Lifecycle — injectable instance state: initializing → ready → draining → stopped. Config и sanitization policy проверяются до ready. Readiness не выполняет исходящие запросы к APIC/LLM, не раскрывает их состояние и не меняет существующие sanitization/auth controls. При draining новый REST/MCP analysis отклоняется с HTTP 503 и безопасным error envelope (`DRAINING`; до ready — `NOT_READY`). Результаты уже начатых анализов и обычные MCP `isError` contracts сохраняются.
+Lifecycle — injectable instance state: initializing → ready → draining → stopped. Config и sanitization policy проверяются до ready. Readiness не выполняет исходящие запросы к APIC/LLM, не раскрывает их состояние и не меняет существующие sanitization/auth controls. При draining новый REST analysis отклоняется с HTTP 503 и безопасным error envelope (`DRAINING`; до ready — `NOT_READY`). Результаты уже начатых анализов и REST response contracts сохраняются.
 
-SIGINT/SIGTERM синхронно включают draining и вызывают HTTP `server.close()`. Новые соединения перестают приниматься; уже начатые REST/MCP analyses, включая обработку после отключения клиента, могут закончить работу. Shutdown ждёт и завершения HTTP responses, и активных analysis promises. Повторные сигналы не запускают новый timer и не сокращают deadline. По завершении — `shutdown_completed`, exit 0. Только после истечения `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, процесс завершается с exit 1.
+SIGINT/SIGTERM синхронно включают draining и вызывают HTTP `server.close()`. Новые соединения перестают приниматься; уже начатые REST analyses, включая обработку после отключения клиента, могут закончить работу. Shutdown ждёт и завершения HTTP responses, и активных analysis promises. Повторные сигналы не запускают новый timer и не сокращают deadline. По завершении — `shutdown_completed`, exit 0. Только после истечения `SHUTDOWN_TIMEOUT_MS` вызывается `closeAllConnections()`, пишется `shutdown_timeout`, процесс завершается с exit 1.
 
 `SHUTDOWN_TIMEOUT_MS=90000` по умолчанию (целое 1–2147483647 ms); OpenShift `terminationGracePeriodSeconds=105`. Это **best-effort operational budget**, не гарантия завершения любого анализа: pagination и последовательные стадии могут превысить deadline. При изменении budget согласуйте pod grace period, rollout timeout и запас для остановки. `UPSTREAM_TIMEOUT_MS` (20000 по умолчанию), retries, fail-fast provider behavior и бизнес-семантика анализа не изменены. Клиентские disconnects не отменяют analysis; deadline ограничивает ожидание при остановке. Внешний kill/OOM или блокировка event loop могут помешать graceful shutdown.
 
-Тесты WP2.2 используют только synthetic fixtures/mocked upstreams: проверяют отсутствие чувствительных значений в логах, REST/MCP outcomes (включая SDK errors внутри HTTP 200), readiness transitions, запрет новой работы, настоящий SIGTERM во время REST/MCP analysis и idempotence/deadline через injectable clock. Container smoke test и OpenShift admission — отдельные проверки, TypeScript build их не заменяет.
+Тесты WP2.2 используют только synthetic fixtures/mocked upstreams: проверяют отсутствие чувствительных значений в логах, REST outcomes, readiness transitions, запрет новой работы, настоящий SIGTERM во время REST analysis и idempotence/deadline через injectable clock. Container smoke test и OpenShift admission — отдельные проверки, TypeScript build их не заменяет.
 
 Все рабочие маршруты требуют `Authorization: Bearer <SERVER_API_KEY>`; ключ не короче 24 символов. В production используйте HTTPS reverse proxy, ограничение доступа и rate limiting. Общий ключ даёт доступ ко всем настроенным источникам; tenant/user RBAC пока не реализован. Origin-запросы браузера запрещены. URL источников задаются только серверной конфигурацией; клиент передаёт идентификаторы и временной диапазон.
 
@@ -90,26 +90,7 @@ curl http://127.0.0.1:3000/api/analyze \
 
 Это пример формата, а не результат проверки реальной транзакции. Причина — вывод LLM, а не детерминированное доказательство. Сервис проверяет формат и существование ссылок, но не истинность рассуждения модели. Без evidence уверенность принудительно `low`.
 
-Ошибки REST: `400` некорректный ввод, `401` авторизация, `403` Origin, `404` нет логов, `422` превышен бюджет контекста/логов, `429` заняты слоты анализа, `502` ошибка источника, спецификации или LLM, `503` приложение ещё не готово или останавливается. Ответ: `{"error":{"code":"...","message":"..."}}`. Ошибка любого обязательного источника прерывает анализ; пустой успешный источник отмечается в `warnings`. MCP сообщает ошибки инструмента через `isError`, согласно протоколу.
-
-## MCP-клиент
-
-URL: `http://127.0.0.1:3000/mcp`, transport: Streamable HTTP, заголовок `Authorization: Bearer ...`. Сервер stateless: initialize, tools/list и tools/call выполняются через POST, без постоянной сессии и SSE GET. `tools/call`:
-
-```json
-{
-  "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-  "params": {
-    "name": "analyze_transaction",
-    "arguments": {
-      "transactionId": "tx-42", "apiId": "payments:1.0",
-      "from": "2026-11-01T09:00:00Z", "to": "2026-11-01T10:00:00Z"
-    }
-  }
-}
-```
-
-Для ручных запросов нужны `Content-Type: application/json` и `Accept: application/json, text/event-stream`; обычный MCP SDK выполняет handshake и выставляет протокольные заголовки.
+Ошибки REST: `400` некорректный ввод, `401` авторизация, `403` Origin, `404` нет логов, `422` превышен бюджет контекста/логов, `429` заняты слоты анализа, `502` ошибка источника, спецификации или LLM, `503` приложение ещё не готово или останавливается. Ответ: `{"error":{"code":"...","message":"..."}}`. Ошибка любого обязательного источника прерывает анализ; пустой успешный источник отмечается в `warnings`.
 
 ## Контракты интеграций и текущие ограничения
 
@@ -121,9 +102,9 @@ URL: `http://127.0.0.1:3000/mcp`, transport: Streamable HTTP, заголовок
 
 Перед отправкой LLM применяется default-deny политика из `config/sanitization-policy.json`. В контекст попадают только разрешённые диагностические поля, безопасная структура спецификации и findings локальной валидации. Произвольный текст сообщений и полные request/response bodies по умолчанию не передаются. Подробности настройки и ограничения описаны ниже. Логи и спецификации остаются недоверенными данными; prompt запрещает выполнять инструкции из них. Исходные данные и тела ошибок внешних сервисов не пишутся в консоль.
 
-Тесты выполняют локальный HTTP/MCP handshake и весь pipeline на имитациях API Connect Analytics, API Connect Management и LLM; реальные системы и качество диагностики реальной модели требуют отдельной интеграционной проверки.
+Тесты выполняют локальные HTTP-запросы и весь pipeline на имитациях API Connect Analytics, API Connect Management и LLM; реальные системы и качество диагностики реальной модели требуют отдельной интеграционной проверки.
 
-Добавление следующего инструмента: отдельный сервис обработки и `server.registerTool(...)` в `src/app.ts`. Общие сетевые ограничения находятся в `src/http.ts`, адаптеры источников — в `src/providers.ts`.
+Добавление следующего HTTP endpoint: отдельный сервис обработки и маршрут `app.post(...)` в `src/app.ts`. Общие сетевые ограничения находятся в `src/http.ts`, адаптеры источников — в `src/providers.ts`.
 
 ## Источники контракта API Connect
 
@@ -131,11 +112,11 @@ URL: `http://127.0.0.1:3000/mcp`, transport: Streamable HTTP, заголовок
 
 Пример вызова через Platform API и корреляции по `global_transaction_id` есть в [официальном IBM quick-check](https://github.com/ibm-apiconnect/quick-check/blob/12e04ed9a8c76f096911d4c6309636d60ae6e0fe/api_deploy_check.py#L265). Код примеров не исполняется сервером.
 
-При переходе со старой версии уберите `DATAPOWER_LOGS_URL` / `DATAPOWER_TOKEN` из локального `.env`, добавьте `APIC_PLATFORM_URL`, `APIC_ANALYTICS_SERVICE`, `APIC_ORG`, `APIC_CATALOG`. В HTTP/MCP ответе счётчик источника теперь `sources.apiConnect` вместо `sources.datapower`; идентификаторы evidence этого источника имеют префикс `apic:`. `APIC_TOKEN` используется и для Analytics, и для спецификации.
+При переходе со старой версии уберите `DATAPOWER_LOGS_URL` / `DATAPOWER_TOKEN` из локального `.env`, добавьте `APIC_PLATFORM_URL`, `APIC_ANALYTICS_SERVICE`, `APIC_ORG`, `APIC_CATALOG`. В HTTP ответе счётчик источника теперь `sources.apiConnect` вместо `sources.datapower`; идентификаторы evidence этого источника имеют префикс `apic:`. `APIC_TOKEN` используется и для Analytics, и для спецификации.
 
 ## WP1: policy-based sanitization и локальная диагностика HTTP 400
 
-`src/sanitization/context-builder.ts` заменяет прежнюю отправку отредактированных логов целиком. Провайдеры, MCP `analyze_transaction`, stateless transport и REST `POST /api/analyze` сохраняются. Findings добавляются **во внутренний LLM-контекст**, а не в публичную схему ответа. Сохраняются структура source counts, evidence IDs (`apic:1`), JSON pointers, сетевые таймауты, лимит concurrency и проверка ответа LLM. Существование evidence pointer проверяется локально в оригинальной спецификации: скрытие schema contents не делает исходный pointer невалидным. Оригинальный документ при этом не отправляется LLM.
+`src/sanitization/context-builder.ts` заменяет прежнюю отправку отредактированных логов целиком. Провайдеры и REST `POST /api/analyze` сохраняются. Findings добавляются **во внутренний LLM-контекст**, а не в публичную схему ответа. Сохраняются структура source counts, evidence IDs (`apic:1`), JSON pointers, сетевые таймауты, лимит concurrency и проверка ответа LLM. Существование evidence pointer проверяется локально в оригинальной спецификации: скрытие schema contents не делает исходный pointer невалидным. Оригинальный документ при этом не отправляется LLM.
 
 Порядок обработки: получить источники → проверить оригинальные значения в памяти → выбрать разрешённые поля → сформировать безопасные shape/validation findings → отправить безопасный контекст LLM → проверить контракт и evidence ответа → удалить совпадения с защищёнными значениями из текстов диагноза. Оригиналы не заменяются масками до локальной валидации. Request-local данные защиты очищаются в `finally`; payloads и соответствия не записываются в файлы, логи или внешние хранилища.
 
@@ -231,6 +212,6 @@ Findings содержат `logId`, `fieldPath`, исходный `specPointer` �
 
 Текстовые части диагноза повторно очищаются от известных credentials, protected original scalars и распространённых embedded key/value/email/Bearer fragments. Evidence IDs и безопасные JSON pointers остаются metadata и не переписываются; если pointer сам содержит распознаваемый credential, он заменяется на `null`. Публичный ответ по-прежнему возвращает переданные клиентом `transactionId` и `apiId`; они исключены из outbound LLM context, а не удалены из API-контракта. Exact-value scrub может скрыть также совпавшие технические фрагменты в тексте диагноза. Эта защита не является общей DLP-гарантией против всех преобразований, кодировок, догадок LLM или чувствительных schema metadata. Default-deny и отсутствие raw free text/body — основной барьер.
 
-Все тестовые значения синтетические. Regression suite проверяет HTTP 400 pattern/length/type/enum ошибки, missing required, nested JSON, repeated-value policy, mandatory credentials, output leakage, invalid/missing policy, unsupported schema features, isolated regex timeout и прежние MCP/REST calls. Реальные внешние системы не вызываются.
+Все тестовые значения синтетические. Regression suite проверяет HTTP 400 pattern/length/type/enum ошибки, missing required, nested JSON, repeated-value policy, mandatory credentials, output leakage, invalid/missing policy, unsupported schema features, isolated regex timeout, REST calls и отсутствие MCP endpoint. Реальные внешние системы не вызываются.
 
 WP1 не включает Splunk Transaction Verification, Specification Consistency enforcement, ужесточение transaction-to-API matching, новые auth/RBAC, контейнеризацию, OpenShift Deployment, merge или deploy.

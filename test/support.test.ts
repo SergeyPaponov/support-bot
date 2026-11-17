@@ -1,8 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Analyzer } from '../src/analyzer.js';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
@@ -118,7 +116,7 @@ test('configuration rejects remote cleartext and embedded credentials', () => {
   assert.throws(() => readConfig({ ...env, LLM_URL: 'http://remote.example/chat' }));
   assert.throws(() => readConfig({ ...env, LLM_URL: 'https://user:pass@remote.example/chat' }));
 });
-test('REST and MCP SDK initialize/list/call work over HTTP', async () => {
+test('REST analysis preserves health, authentication, validation and response contracts', async () => {
   const f = fixture();
   const server = createApp(config, f.analyzer).listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -126,7 +124,6 @@ test('REST and MCP SDK initialize/list/call work over HTTP', async () => {
   assert.ok(address && typeof address !== 'string');
   const base = `http://127.0.0.1:${address.port}`;
   const headers = { authorization: `Bearer ${config.SERVER_API_KEY}`, 'content-type': 'application/json' };
-  const client = new Client({ name: 'test', version: '1.0.0' });
   try {
     assert.equal((await fetch(`${base}/healthz`)).status, 200);
     assert.equal((await fetch(`${base}/api/analyze`, { method: 'POST', body: '{}' })).status, 401);
@@ -135,12 +132,30 @@ test('REST and MCP SDK initialize/list/call work over HTTP', async () => {
     const response = await fetch(`${base}/api/analyze`, { method: 'POST', headers, body: JSON.stringify(input) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).transactionId, input.transactionId);
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers } }));
-    assert.equal((await client.listTools()).tools[0]?.name, 'analyze_transaction');
-    const result = await client.callTool({ name: 'analyze_transaction', arguments: input });
-    assert.ok(!result.isError);
-    assert.equal((result.structuredContent as Record<string, unknown>)?.transactionId, input.transactionId);
-    const invalid = await client.callTool({ name: 'analyze_transaction', arguments: { ...input, transactionId: '" | delete' } });
-    assert.equal(invalid.isError, true);
-  } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test('former MCP endpoint is absent for every HTTP method and cannot invoke analysis', async () => {
+  const f = fixture();
+  const server = createApp(config, f.analyzer).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const headers = { authorization: `Bearer ${config.SERVER_API_KEY}`, 'content-type': 'application/json' };
+  try {
+    for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) {
+      const response: Response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
+        method, headers, ...(method === 'POST' ? { body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'analyze_transaction', arguments: input } }) } : {}),
+      });
+      assert.equal(response.status, 404);
+      assert.equal(response.headers.get('mcp-session-id'), null);
+      await response.text();
+    }
+    assert.equal(f.calls.length, 0);
+    const invalid = await fetch(`http://127.0.0.1:${address.port}/api/analyze`, {
+      method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: input }),
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).error.code, 'INVALID_INPUT');
+    assert.equal(f.calls.length, 0);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

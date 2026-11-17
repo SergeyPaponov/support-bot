@@ -1,8 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createApp } from '../src/app.js';
 import { createLogger, safeErrorCode } from '../src/logger.js';
 import { Lifecycle } from '../src/lifecycle.js';
@@ -78,7 +76,7 @@ test('logging preserves Express case-insensitive and trailing-slash REST route c
   } finally { await app.close(); }
 });
 
-for (const endpoint of ['/api/analyze', '/mcp']) test(`${endpoint} auth, malformed JSON and Origin failures are logged without input/header content`, async () => {
+test('REST auth, malformed JSON and Origin failures are logged without input/header content', async () => {
   const app = await serve();
   try {
     const requests = [
@@ -87,7 +85,7 @@ for (const endpoint of ['/api/analyze', '/mcp']) test(`${endpoint} auth, malform
       { headers, body: '{"private-request-body":', status: 400, code: 'INVALID_BODY' },
     ];
     for (const req of requests) {
-      const r = await fetch(app.base + endpoint, { method: 'POST', headers: req.headers, body: req.body });
+      const r = await fetch(app.base + '/api/analyze', { method: 'POST', headers: req.headers, body: req.body });
       assert.equal(r.status, req.status); await r.text();
       assert.equal(app.logs.records().at(-1).errorCode, req.code);
     }
@@ -105,41 +103,7 @@ test('REST input validation failures retain the public error envelope and log sa
   } finally { await app.close(); }
 });
 
-for (const fail of [false, true]) test(`MCP ${fail ? 'logical failure inside HTTP 200' : 'success'} is logged once without protocol/input data`, async () => {
-  const app = await serve(mockAnalyzer({ fail }).analyzer);
-  const client = new Client({ name: 'observability', version: '1.0.0' });
-  const statuses: number[] = [];
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${app.base}/mcp`), { requestInit: { headers }, fetch: async (url, init) => {
-      const response = await fetch(url, init); statuses.push(response.status); return response;
-    } }));
-    assert.equal((await client.listTools()).tools[0]?.name, 'analyze_transaction');
-    assert.equal(app.logs.records().length, 0, 'handshake/list are not analysis events');
-    const result = await client.callTool({ name: 'analyze_transaction', arguments: input });
-    assert.equal(!!result.isError, fail); assert.equal(statuses.at(-1), 200);
-    assert.equal(app.logs.records().length, 1);
-    const record = app.logs.records()[0];
-    assert.equal(record.interface, 'MCP'); assert.equal(record.outcome, fail ? 'failure' : 'success');
-    assert.equal(record.errorCode, fail ? 'UPSTREAM_UNAVAILABLE' : null);
-    assertSafe(app.logs.text());
-  } finally { await client.close(); await app.close(); }
-});
-
-test('MCP validation failures from the callback and SDK schema validation are both logged as failures', async () => {
-  const app = await serve();
-  const client = new Client({ name: 'observability', version: '1.0.0' });
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${app.base}/mcp`), { requestInit: { headers } }));
-    for (const args of [{ ...input, transactionId: 'bad transaction private-request-body' }, { ...input, transactionId: 123 }]) {
-      assert.equal((await client.callTool({ name: 'analyze_transaction', arguments: args })).isError, true);
-    }
-    assert.equal(app.logs.records().length, 2);
-    for (const record of app.logs.records()) { assert.equal(record.outcome, 'failure'); assert.equal(record.errorCode, 'INVALID_INPUT'); }
-    assertSafe(app.logs.text());
-  } finally { await client.close(); await app.close(); }
-});
-
-test('public readiness transitions, unchanged healthz and rejection of REST/MCP work during initialization/draining', async () => {
+test('public readiness transitions, unchanged healthz and rejection of REST work during initialization/draining', async () => {
   const lifecycle = new Lifecycle(); const mock = mockAnalyzer();
   const app = await serve(mock.analyzer, lifecycle);
   try {
@@ -154,10 +118,8 @@ test('public readiness transitions, unchanged healthz and rejection of REST/MCP 
       assert.deepEqual(await ready.json(), { status: phase === 'ready' ? 'ready' : 'not_ready' });
       assert.equal(mock.calls(), 0, 'probes never call dependencies');
       if (phase !== 'ready') {
-        for (const [path, body] of [['/api/analyze', input], ['/mcp', { jsonrpc: '2.0', id: 42, method: 'tools/call', params: { name: 'analyze_transaction', arguments: input } }]] as const) {
-          const r = await fetch(app.base + path, { method: 'POST', headers, body: JSON.stringify(body) });
-          assert.equal(r.status, 503); assert.equal((await r.json()).error.code, phase === 'initializing' ? 'NOT_READY' : 'DRAINING');
-        }
+        const r = await fetch(app.base + '/api/analyze', { method: 'POST', headers, body: JSON.stringify(input) });
+        assert.equal(r.status, 503); assert.equal((await r.json()).error.code, phase === 'initializing' ? 'NOT_READY' : 'DRAINING');
         if (phase !== 'initializing') assert.equal(lifecycle.markReady(), false);
       }
     }

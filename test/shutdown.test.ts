@@ -82,7 +82,7 @@ test('SIGTERM during initialization cannot transition back to ready', async () =
   } finally { f.controller.dispose(); }
 });
 
-for (const channel of ['REST', 'MCP'] as const) test(`production runtime: ${channel} in-flight analysis completes after real SIGTERM without sensitive logs`, { timeout: 15000 }, async t => {
+test('production runtime: REST in-flight analysis completes after real SIGTERM without sensitive logs', { timeout: 15000 }, async t => {
   const llmStarted = deferred(); const releaseLlm = deferred();
   const upstream = createServer(async (req, res) => {
     for await (const _chunk of req) { /* consume synthetic request only */ }
@@ -122,9 +122,8 @@ for (const channel of ['REST', 'MCP'] as const) test(`production runtime: ${chan
   const [message] = await once(child, 'message');
   const base = `http://127.0.0.1:${message.port}`;
   assert.equal((await fetch(base + '/readyz')).status, 200);
-  const body = channel === 'REST' ? input : { jsonrpc: '2.0', id: 'private-transaction-42', method: 'tools/call', params: { name: 'analyze_transaction', arguments: input } };
-  const response = fetch(base + (channel === 'REST' ? '/api/analyze' : '/mcp'), {
-    method: 'POST', headers: { ...headers, accept: 'application/json, text/event-stream' }, body: JSON.stringify(body),
+  const response = fetch(base + '/api/analyze', {
+    method: 'POST', headers, body: JSON.stringify(input),
   });
   await llmStarted.promise;
   child.kill('SIGTERM'); await shutdownStarted.promise;
@@ -133,14 +132,13 @@ for (const channel of ['REST', 'MCP'] as const) test(`production runtime: ${chan
   releaseLlm.resolve();
   const result = await response; assert.equal(result.status, 200);
   const json = await result.json();
-  if (channel === 'REST') assert.equal(json.transactionId, input.transactionId);
-  else { assert.equal(!!json.result.isError, false); assert.equal(json.result.structuredContent.transactionId, input.transactionId); }
+  assert.equal(json.transactionId, input.transactionId);
   assert.deepEqual(await exit, [0, null]);
   // close waits for stdout/stderr pipes too, unlike exit.
   await close;
   const records = stdout.trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(records.map(r => r.event), ['startup', 'ready', 'shutdown_started', 'analysis_completed', 'shutdown_completed']);
-  assert.equal(records[3].interface, channel); assert.equal(stderr, '');
+  assert.equal(records[3].interface, 'REST'); assert.equal(stderr, '');
   for (const value of sensitive) assert.ok(!(stdout + stderr).includes(value));
 });
 

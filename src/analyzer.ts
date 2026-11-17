@@ -72,7 +72,7 @@ export class Analyzer {
       return {
         transactionId: input.transactionId, apiId: input.apiId,
         diagnosis: built.protectDiagnosis(diagnosis.data),
-        // Retain the response shape for existing REST/MCP clients.
+        // Retain the response shape for existing REST clients.
         sources: { splunk: 0, apiConnect: logs.length, specification: 'API Connect' },
         warnings,
       };
