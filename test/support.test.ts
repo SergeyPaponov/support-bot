@@ -26,11 +26,13 @@ function fixture(options: FixtureOptions = {}) {
     calls.push({ url: String(url), init });
     const host = new URL(String(url)).hostname;
     if (host === 'analytics.example') return new Response(JSON.stringify({ total: options.noLogs ? 0 : 1, events: options.noLogs ? [] : [{ id: 'event-1', event: {
-      global_transaction_id: 'tx-42', datetime: '2026-11-01T09:30:00Z', status_code: '400 Bad Request', error_message: 'Missing X-Client-Id; user@example.com',
+      global_transaction_id: 'tx-42', datetime: new URL(String(url)).searchParams.get('end'),
+      api_ref: 'payments:1.0', org_name: 'provider-org', catalog_name: 'sandbox',
+      status_code: '400 Bad Request', error_message: 'Missing X-Client-Id; user@example.com',
       authorization: 'Bearer credential-that-must-not-leak', nested: { password: 'password-that-must-not-leak' },
       payload: options.bigLogs ? 'x'.repeat(170000) : 'non-sensitive',
     } }] }), { status: options.failAnalytics ? 503 : 200 });
-    if (host === 'apic.example') return new Response(options.invalidSpec ? '{}' : options.yaml ? 'swagger: "2.0"\npaths:\n  /payments:\n    post: {}\n' : JSON.stringify({ openapi: '3.0.3', paths: { '/payments': { post: { parameters: [{ in: 'header', name: 'X-Client-Id', required: true }] } } } }));
+    if (host === 'apic.example') return new Response(options.invalidSpec ? '{}' : options.yaml ? 'swagger: "2.0"\ninfo:\n  version: "1.0"\npaths:\n  /payments:\n    post: {}\n' : JSON.stringify({ openapi: '3.0.3', info: { version: '1.0' }, paths: { '/payments': { post: { parameters: [{ in: 'header', name: 'X-Client-Id', required: true }] } } } }));
     if (host === 'llm.example') return new Response(JSON.stringify({ choices: [{ message: { content: options.invalidCompletion ? 'not JSON' : JSON.stringify(options.completion ?? diagnosis) } }] }));
     throw new Error('Unexpected URL');
   };
@@ -129,7 +131,7 @@ test('REST analysis preserves health, authentication, validation and response co
     assert.equal((await fetch(`${base}/api/analyze`, { method: 'POST', body: '{}' })).status, 401);
     assert.equal((await fetch(`${base}/api/analyze`, { method: 'POST', headers: { ...headers, origin: 'https://evil.example' }, body: '{}' })).status, 403);
     assert.equal((await fetch(`${base}/api/analyze`, { method: 'POST', headers, body: '{}' })).status, 400);
-    const response = await fetch(`${base}/api/analyze`, { method: 'POST', headers, body: JSON.stringify(input) });
+    const response = await fetch(`${base}/api/analyze`, { method: 'POST', headers, body: JSON.stringify({ transaction_id: input.transactionId }) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).transactionId, input.transactionId);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }

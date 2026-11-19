@@ -3,7 +3,7 @@ import { timingSafeEqual, createHash } from 'node:crypto';
 import { ZodError } from 'zod';
 import type { Config } from './config.js';
 import { Analyzer } from './analyzer.js';
-import { analysisInput, ServiceError } from './contracts.js';
+import { transactionAnalysisInput, ServiceError } from './contracts.js';
 import { Lifecycle } from './lifecycle.js';
 import { createLogger, safeErrorCode, type Logger } from './logger.js';
 
@@ -12,7 +12,7 @@ function publicError(error: unknown) {
   if (error instanceof ServiceError) return { status: error.status, error: { code: error.code, message: error.message } };
   return { status: 500, error: { code: 'INTERNAL_ERROR', message: 'Internal server error' } };
 }
-export function createApp(config: Config, analyzer: Pick<Analyzer, 'analyze'> = new Analyzer(config), options: {
+export function createApp(config: Config, analyzer: Pick<Analyzer, 'analyzeTransaction'> = new Analyzer(config), options: {
   lifecycle?: Lifecycle; logger?: Logger;
 } = {}) {
   const lifecycle = options.lifecycle ?? new Lifecycle();
@@ -51,7 +51,7 @@ export function createApp(config: Config, analyzer: Pick<Analyzer, 'analyze'> = 
     let release: (() => void) | undefined;
     try {
       release = lifecycle.acquire();
-      const result = await analyzer.analyze(analysisInput.parse(raw));
+      const result = await analyzer.analyzeTransaction(transactionAnalysisInput.parse(raw));
       record.finish(); return result;
     } catch (error) {
       record.finish(safeErrorCode(error)); throw error;

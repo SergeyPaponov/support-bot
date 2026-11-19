@@ -53,16 +53,16 @@ const policy = loadPolicy(process.env.DATA_POLICY_FILE);
 const external = !!process.env.DATA_POLICY_FILE;
 assert.equal(policy.freeText, external ? 'exclude' : 'classify');
 
-const input = {transactionId:'tx-wp2',apiId:'api-wp2',from:'2026-11-01T09:00:00Z',to:'2026-11-01T10:00:00Z'};
+const input = {transaction_id:'tx-wp2'};
 const raw = 'AB-12#C';
-const schema = {openapi:'3.0.3',paths:{'/payments':{post:{requestBody:{content:{'application/json':{schema:{type:'object',properties:{accountNumber:{type:'string',pattern:'^[A-Z]{2}-[0-9]{2}[A-Z]$'}}}}}}}}}};
+const schema = {openapi:'3.0.3',info:{version:'1.0.0','x-ibm-name':'api-wp2'},paths:{'/payments':{post:{requestBody:{content:{'application/json':{schema:{type:'object',properties:{accountNumber:{type:'string',pattern:'^[A-Z]{2}-[0-9]{2}[A-Z]$'}}}}}}}}}};
 let completions = 0;
 const upstream = createServer(async (req, res) => {
   try {
     let text = '';
     for await (const chunk of req) text += chunk;
     res.setHeader('Content-Type','application/json');
-    if (req.url.startsWith('/analytics/')) return res.end(JSON.stringify({total:1,events:[{id:'event-1',global_transaction_id:input.transactionId,datetime:'2026-11-01T09:30:00Z',status:400,method:'POST',operation_path:'/payments',request_content_type:'application/json',request_body:{accountNumber:raw},message:'pattern validation error'}]}));
+    if (req.url.startsWith('/analytics/')) return res.end(JSON.stringify({total:1,events:[{id:'event-1',global_transaction_id:input.transaction_id,datetime:new URL(req.url,'http://localhost').searchParams.get('end'),api_ref:'api-wp2:1.0.0',org_name:'org',catalog_name:'catalog',status:400,method:'POST',operation_path:'/payments',request_content_type:'application/json',request_body:{accountNumber:raw},message:'pattern validation error'}]}));
     if (req.url.startsWith('/spec/')) return res.end(JSON.stringify(schema));
     assert.equal(req.url, '/llm');
     const body = JSON.parse(text);
@@ -94,7 +94,7 @@ try {
   const response=await fetch('http://127.0.0.1:3000/api/analyze',{method:'POST',headers,body:JSON.stringify(input)});
   assert.equal(response.status,200);
   const result=await response.json();
-  assert.equal(result.transactionId,input.transactionId);
+  assert.equal(result.transactionId,input.transaction_id);
   assert.equal(completions,1);
   assert.equal(JSON.stringify(result).includes(raw),false);
   const removed=await fetch('http://127.0.0.1:3000/mcp',{method:'POST',headers,body:'{}'});

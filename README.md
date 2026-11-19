@@ -6,13 +6,14 @@ TypeScript-сервер диагностики API-транзакций. Сер�
 
 Целевая версия: **API Connect 10.0.8.10**. Источник логов — только нативный Analytics API API Connect, доступный через Platform API host (тот же API используется интерфейсом API Manager). Management API предоставляет спецификации. Прямое подключение к DataPower больше не требуется. LLM-коннектор по умолчанию использует OpenAI-compatible Chat Completions.
 
-В этой ветке Splunk полностью исключён из извлечения логов: `SPLUNK_*` не требуются и игнорируются, запросы в Splunk не выполняются. Для совместимости REST поле `sources.splunk` сохранено и всегда равно `0`; evidence ссылается на `apic:*`. Пустой Analytics возвращает `404 NO_LOGS`, ошибка Analytics прерывает анализ; fallback на другой источник отсутствует. Получение спецификации, sanitization policy, LLM-анализ, auth, operational logging и graceful shutdown не изменены.
+В этой ветке Splunk полностью исключён из извлечения логов: `SPLUNK_*` не требуются и игнорируются, запросы в Splunk не выполняются. Для совместимости REST поле `sources.splunk` сохранено и всегда равно `0`; evidence ссылается на `apic:*`. Успешный пустой поиск Analytics возвращает `404 TRANSACTION_NOT_FOUND`, ошибка Analytics прерывает анализ; fallback на другой источник отсутствует. Получение спецификации, sanitization policy, LLM-анализ, auth, operational logging и graceful shutdown не изменены.
 
 ```mermaid
 flowchart LR
   Client[HTTP клиент] --> Server[Support Bot]
   Server --> Analytics[API Connect Analytics: события транзакций]
-  Server --> APIC[API Connect: Swagger / OpenAPI]
+  Analytics --> Identity[API identity: api_ref / api_name]
+  Identity --> APIC[API Connect: Swagger / OpenAPI]
   Analytics --> Context[Маскирование и сбор контекста]
   APIC --> Context
   Context --> LLM[LLM HTTP-коннектор]
@@ -47,7 +48,7 @@ SIGINT/SIGTERM синхронно включают draining и вызывают 
 
 Тесты WP2.2 используют только synthetic fixtures/mocked upstreams: проверяют отсутствие чувствительных значений в логах, REST outcomes, readiness transitions, запрет новой работы, настоящий SIGTERM во время REST analysis и idempotence/deadline через injectable clock. Container smoke test и OpenShift admission — отдельные проверки, TypeScript build их не заменяет.
 
-Все рабочие маршруты требуют `Authorization: Bearer <SERVER_API_KEY>`; ключ не короче 24 символов. В production используйте HTTPS reverse proxy, ограничение доступа и rate limiting. Общий ключ даёт доступ ко всем настроенным источникам; tenant/user RBAC пока не реализован. Origin-запросы браузера запрещены. URL источников задаются только серверной конфигурацией; клиент передаёт идентификаторы и временной диапазон.
+Все рабочие маршруты требуют `Authorization: Bearer <SERVER_API_KEY>`; ключ не короче 24 символов. В production используйте HTTPS reverse proxy, ограничение доступа и rate limiting. Общий ключ даёт доступ ко всем настроенным источникам; tenant/user RBAC пока не реализован. Origin-запросы браузера запрещены. URL источников задаются только серверной конфигурацией; клиент передаёт только `transaction_id`.
 
 ## Пример HTTP-запроса
 
@@ -56,14 +57,38 @@ curl http://127.0.0.1:3000/api/analyze \
   -H "Authorization: Bearer $SERVER_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{
-    "transactionId": "tx-42",
-    "apiId": "payments:1.0",
-    "from": "2026-11-01T09:00:00Z",
-    "to": "2026-11-01T10:00:00Z"
+    "transaction_id": "tx-42"
   }'
 ```
 
-`apiId` — ID опубликованного API в настроенном каталоге; он выбирает спецификацию API/версии, соответствующую транзакции. Для другого способа адресации можно изменить `APIC_SPEC_URL_TEMPLATE`. Нужен явно: только ID транзакции не гарантирует выбор правильной версии контракта. Временной диапазон обязателен, максимум 24 часа. `transactionId` допускает буквы ASCII, цифры и `_.:-`.
+Тело запроса строго содержит только `transaction_id`: 1–128 ASCII букв, цифр или `_.:-`. Старые `transactionId`, `apiId`, `from`, `to`, а также любые дополнительные поля отклоняются с HTTP 400. Авторизация и Origin policy сохранены. Успешный ответ сохраняет прежние camelCase поля `transactionId`, `apiId`, `diagnosis`, `sources`, `warnings`.
+
+### Transaction-only lookup: фиксированное окно и API identity
+
+Сервер один раз фиксирует текущий UTC timestamp для принятого анализа. Analytics получает `end` = этот момент и `start` = ровно на `14 × 24 × 60 × 60 × 1000` ms раньше, в ISO 8601 с `Z` и миллисекундами. Все страницы используют одинаковое окно; DST и локальный часовой пояс на расчёт не влияют. Публичный ключ всегда `transaction_id`, но поле точного поиска остаётся серверным `APIC_TRANSACTION_FIELD`: по умолчанию `global_transaction_id`, опционально `transaction_id`. Используется прежний фильтр `equals:`.
+
+Успешный поиск без событий возвращает HTTP 404:
+
+```json
+{"error":{"code":"TRANSACTION_NOT_FOUND","message":"Transaction 'abc-123-xyz' was not found in API Analytics within the last 14 days."}}
+```
+
+При пустой выборке Management и LLM не вызываются. Connectivity/timeout, HTTP errors и некорректные Analytics responses не превращаются в 404. Сохраняются полная пагинация, повторная проверка transaction ID/времени, агрегирование событий, лимит 200 событий и 20 страниц. Лимиты не снимаются для 14-дневного окна: переполнение даёт существующую ошибку, без частичного анализа.
+
+Подтверждённый формат метаданных:
+
+```json
+{"api_ref":"maserviceapi:1.0.0","api_name":"maserviceapi","catalog_id":"j5884j4i98jj","catalog_name":"internal","org_id":"bghs73773gsd","org_name":"dev"}
+```
+
+- Валидный `api_ref` формата `name:version` имеет приоритет. Он целиком, с версией, подставляется в `{apiId}` существующего document endpoint. Поиск по имени не выполняется; ошибки авторизации, сети, HTTP 404 или несовпадение документа не включают fallback.
+- Organization/catalog определяются по `org_id`/`org_name`, `catalog_id`/`catalog_name`. Имена и IDs сохраняются как aliases; Management-запросы остаются в исходном настроенном scope (имя либо ID из `APIC_ORG`/`APIC_CATALOG`). Метаданные должны соответствовать этим настройкам; выход в другую область возвращает `API_SCOPE_MISMATCH`. При отсутствии scope-полей используется область исходного Analytics-запроса. Конфликтующие refs, версии или scope среди событий одной транзакции дают `API_IDENTITY_AMBIGUOUS`.
+- Только при отсутствующем/непригодном `api_ref` используется `api_name`. Management catalog list `/api/catalogs/{org}/{catalog}/apis/{api-name}` читается полностью с `offset`/`limit` (до 20 страниц по 100). Нужен ровно один результат с таким именем; `api_version` из транзакции дополнительно ограничивает выбор, если присутствует. Несколько подходящих версий — `API_IDENTITY_AMBIGUOUS`, отсутствие подходящей API identity — `API_IDENTITY_UNRESOLVED` (HTTP 422). Полученный API ID используется для одного document request.
+- Swagger/OpenAPI должен иметь `info.version`, совпадающий с определённой версией; `info.x-ibm-name`, если присутствует, должен совпадать с API name. Нарушение даёт `API_SPEC_IDENTITY_MISMATCH` (HTTP 502) до вызова LLM. API ID в успешном ответе — точный `api_ref`, либо ID однозначно выбранного API при fallback.
+
+`APIC_SPEC_URL_TEMPLATE` поддерживает `{org}`, `{catalog}`, `{apiId}`; все значения URL-кодируются как отдельные path segments. Фиксированные native templates проверяются на соответствие transaction scope. Name-list URL выводится из окончания `/apis/{apiId}/document`; для нестандартного routing задайте серверный `APIC_API_LIST_URL_TEMPLATE` с `{apiName}` и, при необходимости, `{org}`/`{catalog}`. Без такого template неподдерживаемая конфигурация fallback даёт `API_RESOLUTION_CONFIG_ERROR` (503). URL из транзакции или ответов Management не используются, redirects по-прежнему запрещены.
+
+Резолвинг API меняет только получение входов для анализа. Sanitization policy, LLM prompt/response validation, evidence checks, authentication, concurrency, upstream timeout и graceful shutdown сохранены. Transaction ID в требуемом сообщении 404 — часть HTTP error response; в operational logs по-прежнему пишутся только безопасные коды, без ID и upstream metadata.
 
 Ответ HTTP 200:
 
@@ -90,12 +115,12 @@ curl http://127.0.0.1:3000/api/analyze \
 
 Это пример формата, а не результат проверки реальной транзакции. Причина — вывод LLM, а не детерминированное доказательство. Сервис проверяет формат и существование ссылок, но не истинность рассуждения модели. Без evidence уверенность принудительно `low`.
 
-Ошибки REST: `400` некорректный ввод, `401` авторизация, `403` Origin, `404` нет логов, `422` превышен бюджет контекста/логов, `429` заняты слоты анализа, `502` ошибка источника, спецификации или LLM, `503` приложение ещё не готово или останавливается. Ответ: `{"error":{"code":"...","message":"..."}}`. Ошибка любого обязательного источника прерывает анализ; пустой успешный источник отмечается в `warnings`.
+Ошибки REST: `400` некорректный ввод, `401` авторизация, `403` Origin, `404` транзакция не найдена за последние 14 суток, `422` превышен бюджет контекста/логов или API identity неоднозначна, `429` заняты слоты анализа, `502` ошибка источника, спецификации или LLM, `503` приложение ещё не готово или останавливается. Ответ: `{"error":{"code":"...","message":"..."}}`. Ошибка обязательного источника прерывает анализ; `TRANSACTION_NOT_FOUND` возвращается только после успешного пустого поиска Analytics.
 
 ## Контракты интеграций и текущие ограничения
 
-- **API Connect Analytics**: нативный `GET /analytics/{service}/catalogs/{org}/{catalog}/events` на `APIC_PLATFORM_URL`, заголовки `Authorization: Bearer <APIC_TOKEN>` и `Accept: application/json`. Параметры `start`, `end`, `global_transaction_id=equals:<transactionId>` (либо `transaction_id`, если настроено `APIC_TRANSACTION_FIELD`), `limit=100`, `offset`. Точное сравнение через `equals:` не позволяет трактовать ID как оператор поиска. Ответ `{total, events: [...]}`; поддерживаются документированный формат `{id, event: {...}}` и плоские события. Повторно проверяются ID транзакции и `datetime`; ID должен соответствовать выбранному полю. По умолчанию используйте `X-Global-Transaction-Id` / `global_transaction_id`, а не произвольный correlation header. Пагинация обрабатывается до полного набора, максимум 200 событий и 20 запросов. Изменение total, дубликаты ID или неполная выборка дают ошибку, а не частичный диагноз. Требуется право `api-analytics:view` в каталоге. API Connect Analytics должен быть настроен на сохранение событий; доступность payload/headers зависит от activity-log policy, retention и задержки ingestion. Это события API-вызовов, а не системный журнал Manager pod. Если нужны именно системные логи Manager, их нужно получать через платформенную систему логирования, например Splunk.
-- **API Connect**: GET по `APIC_SPEC_URL_TEMPLATE`; `{apiId}` URL-кодируется. Шаблон должен указывать на нативный endpoint получения документа, с нужными provider org/catalog/API/version. Ожидается сырой Swagger 2.0 или OpenAPI 3.0/3.1 в JSON/YAML, не ZIP или объект-обёртка. Используется готовый Bearer token; login/refresh, discovery API и выбор catalog пока не реализованы. Внешние `$ref` не загружаются. Для каталога v10 нативный маршрут — `/api/catalogs/{org}/{catalog}/apis/{api-id}/document`; он указан в `.env.example`. Требуется право `product:view`. Выбор org/catalog/service задаёт администратор через конфигурацию; динамический выбор каталога клиентом не реализован.
+- **API Connect Analytics**: нативный `GET /analytics/{service}/catalogs/{org}/{catalog}/events` на `APIC_PLATFORM_URL`, заголовки `Authorization: Bearer <APIC_TOKEN>` и `Accept: application/json`. Параметры `start`, `end`, `global_transaction_id=equals:<transaction_id>` (либо `transaction_id`, если настроено `APIC_TRANSACTION_FIELD`), `limit=100`, `offset`. Точное сравнение через `equals:` не позволяет трактовать ID как оператор поиска. Ответ `{total, events: [...]}`; поддерживаются документированный формат `{id, event: {...}}` и плоские события. Повторно проверяются ID транзакции и `datetime`; ID должен соответствовать выбранному полю. По умолчанию используйте `X-Global-Transaction-Id` / `global_transaction_id`, а не произвольный correlation header. Пагинация обрабатывается до полного набора, максимум 200 событий и 20 запросов. Изменение total, дубликаты ID или неполная выборка дают ошибку, а не частичный диагноз. Требуется право `api-analytics:view` в каталоге. API Connect Analytics должен быть настроен на сохранение событий; доступность payload/headers зависит от activity-log policy, retention и задержки ingestion. Это события API-вызовов, а не системный журнал Manager pod. Если нужны именно системные логи Manager, их нужно получать через платформенную систему логирования, например Splunk.
+- **API Connect**: GET по `APIC_SPEC_URL_TEMPLATE`; `{apiId}` URL-кодируется. Шаблон должен указывать на нативный endpoint получения документа, с нужными provider org/catalog/API/version. Ожидается сырой Swagger 2.0 или OpenAPI 3.0/3.1 в JSON/YAML, не ZIP или объект-обёртка. Используется готовый Bearer token; login/refresh, discovery catalog вне настроенного scope не выполняется. Внешние `$ref` не загружаются. Для каталога v10 нативный маршрут — `/api/catalogs/{org}/{catalog}/apis/{api-id}/document`; он указан в `.env.example`. Требуется право `product:view`. Scope ограничен конфигурацией; идентичность API извлекается из Analytics metadata, как описано выше.
 - **LLM**: OpenAI-compatible Chat Completions API: `model`, `messages`, `response_format=json_object`, `temperature=0`, `max_tokens=2500`; ответ `choices[0].message.content` содержит JSON диагноза. Если ваш коннектор имеет другой контракт, меняется слой `Analyzer`, остальные источники независимы.
 
 Внешние запросы используют таймаут (20 секунд по умолчанию), TLS-проверку, запрет redirect и предел ответа 1 MiB. Контекст LLM ограничен 160 KB; это предел байтов, а не гарантия соответствия token limit любой модели. Конкурентных анализов по умолчанию 4. Скрипты запуска Node используют `--use-env-proxy` для HTTP_PROXY/HTTPS_PROXY; сохраните корпоративные CA через `NODE_EXTRA_CA_CERTS` и добавьте loopback в NO_PROXY при использовании proxy.
@@ -108,7 +133,7 @@ curl http://127.0.0.1:3000/api/analyze \
 
 ## Источники контракта API Connect
 
-Контракт сверён с [официальными API definitions IBM для ветки 10.0.8](https://github.com/ibm-apiconnect/apidocs/blob/55556848f4adc8b179c54cc6213d88e3245e6b6d/v10/10.0.8.LATEST/apis.js): `events_catalogList`, `EventListResponse`, `start`, `end`, `global_transaction_id`, `transaction_id`, `limit`, `offset`, `api_getDocumentCatalogScope`. Отдельного опубликованного файла именно для patch 10.0.8.10 в этом источнике нет; совместимость с вашим установленным patch нужно подтвердить живым запросом.
+Контракт сверён с [официальными API definitions IBM для ветки 10.0.8](https://github.com/ibm-apiconnect/apidocs/blob/55556848f4adc8b179c54cc6213d88e3245e6b6d/v10/10.0.8.LATEST/apis.js): `events_catalogList`, `EventListResponse`, `start`, `end`, `global_transaction_id`, `transaction_id`, `limit`, `offset`, `api_getDocumentCatalogScope`, `api_listCatalogScope`, `APIList` (`total_results`, `results`). Отдельного опубликованного файла именно для patch 10.0.8.10 в этом источнике нет; совместимость с вашим установленным patch нужно подтвердить живым запросом.
 
 Пример вызова через Platform API и корреляции по `global_transaction_id` есть в [официальном IBM quick-check](https://github.com/ibm-apiconnect/quick-check/blob/12e04ed9a8c76f096911d4c6309636d60ae6e0fe/api_deploy_check.py#L265). Код примеров не исполняется сервером.
 

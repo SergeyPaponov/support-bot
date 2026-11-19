@@ -1,7 +1,17 @@
 import { z } from 'zod';
 
+const transactionId = z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/);
+export const transactionAnalysisInput = z.object({ transaction_id: transactionId }).strict();
+export type TransactionAnalysisInput = z.infer<typeof transactionAnalysisInput>;
+
+/** UTC elapsed time, independent of local time zones and daylight-saving changes. */
+export function transactionSearchWindow(now: Date) {
+  const end = now.getTime();
+  return { from: new Date(end - 14 * 24 * 60 * 60 * 1000).toISOString(), to: new Date(end).toISOString() };
+}
+
 export const analysisInput = z.object({
-  transactionId: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/),
+  transactionId,
   apiId: z.string().min(1).max(200),
   from: z.string().datetime({ offset: true }),
   to: z.string().datetime({ offset: true }),
@@ -11,6 +21,7 @@ export const analysisInput = z.object({
     ctx.addIssue({ code: 'custom', message: 'Time range must be positive and at most 24 hours' });
 });
 export type AnalysisInput = z.infer<typeof analysisInput>;
+export type AnalyticsSearchInput = Pick<AnalysisInput, 'transactionId' | 'from' | 'to'>;
 export const diagnosisSchema = z.object({
   summary: z.string().min(1).max(2000),
   probableCause: z.string().min(1).max(4000),

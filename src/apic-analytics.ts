@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Config } from './config.js';
-import { ServiceError, type AnalysisInput, type LogEntry } from './contracts.js';
+import { ServiceError, type AnalyticsSearchInput, type LogEntry } from './contracts.js';
 import { parseJson, requestText, type Fetch } from './http.js';
 
 const pageSchema = z.object({
@@ -14,7 +14,7 @@ const datetimeSchema = z.string().datetime({ offset: true });
  * Contract: IBM apidocs v10/10.0.8.LATEST/apis.js, events_catalogList.
  * Never follow pagination URLs from upstream: keep token and requests on this origin.
  */
-export async function getApiConnectEvents(config: Config, input: AnalysisInput, fetcher: Fetch): Promise<LogEntry[]> {
+export async function getApiConnectEvents(config: Config, input: AnalyticsSearchInput, fetcher: Fetch): Promise<LogEntry[]> {
   const segments = [config.APIC_ANALYTICS_SERVICE, config.APIC_ORG, config.APIC_CATALOG].map(encodeURIComponent);
   const url = new URL(`/analytics/${segments[0]}/catalogs/${segments[1]}/${segments[2]}/events`, config.APIC_PLATFORM_URL);
   // "equals:" prevents IDs like "not:123" being interpreted as Analytics operators.

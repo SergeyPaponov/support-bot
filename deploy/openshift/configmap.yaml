@@ -12,7 +12,7 @@ data:
   APIC_ORG: "provider-org-name-or-id"
   APIC_CATALOG: "catalog-name-or-id"
   APIC_TRANSACTION_FIELD: "global_transaction_id"
-  APIC_SPEC_URL_TEMPLATE: "https://apic-platform.example.com/api/catalogs/provider-org-name-or-id/catalog-name-or-id/apis/{apiId}/document"
+  APIC_SPEC_URL_TEMPLATE: "https://apic-platform.example.com/api/catalogs/{org}/{catalog}/apis/{apiId}/document"
   LLM_URL: "https://llm-connector.example.com/v1/chat/completions"
   LLM_MODEL: "replace-with-approved-model"
   UPSTREAM_TIMEOUT_MS: "20000"

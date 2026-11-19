@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
 import { Lifecycle } from '../src/lifecycle.js';
 import { installShutdown } from '../src/shutdown.js';
-import { config, input, headers, diagnosis, sensitive, captureLogs } from './operational-fixtures.js';
+import { config, input, httpInput, headers, diagnosis, sensitive, captureLogs } from './operational-fixtures.js';
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -87,9 +87,10 @@ test('production runtime: REST in-flight analysis completes after real SIGTERM w
   const upstream = createServer(async (req, res) => {
     for await (const _chunk of req) { /* consume synthetic request only */ }
     if (req.url?.startsWith('/analytics/')) { res.end(JSON.stringify({ total: 1, events: [{ id: 'event-1', event: {
-      global_transaction_id: input.transactionId, datetime: '2026-11-01T09:30:00Z', status: 400,
+      global_transaction_id: input.transactionId, datetime: new URL(req.url, 'http://localhost').searchParams.get('end'), status: 400,
+      api_ref: 'payments:1.0', org_name: 'org', catalog_name: 'catalog',
     } }] })); return; }
-    if (req.url?.startsWith('/spec/')) { res.end(JSON.stringify({ openapi: '3.0.3', paths: {} })); return; }
+    if (req.url?.startsWith('/spec/')) { res.end(JSON.stringify({ openapi: '3.0.3', info: { version: '1.0', 'x-ibm-name': 'payments' }, paths: {} })); return; }
     if (req.url === '/llm') {
       llmStarted.resolve(); await releaseLlm.promise;
       res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(diagnosis) } }] })); return;
@@ -123,7 +124,7 @@ test('production runtime: REST in-flight analysis completes after real SIGTERM w
   const base = `http://127.0.0.1:${message.port}`;
   assert.equal((await fetch(base + '/readyz')).status, 200);
   const response = fetch(base + '/api/analyze', {
-    method: 'POST', headers, body: JSON.stringify(input),
+    method: 'POST', headers, body: JSON.stringify(httpInput),
   });
   await llmStarted.promise;
   child.kill('SIGTERM'); await shutdownStarted.promise;

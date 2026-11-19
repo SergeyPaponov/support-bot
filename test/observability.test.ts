@@ -6,7 +6,7 @@ import { createLogger, safeErrorCode } from '../src/logger.js';
 import { Lifecycle } from '../src/lifecycle.js';
 import { ServiceError } from '../src/contracts.js';
 import { readConfig } from '../src/config.js';
-import { config, input, headers, sensitive, captureLogs, mockAnalyzer } from './operational-fixtures.js';
+import { config, input, httpInput, headers, sensitive, captureLogs, mockAnalyzer } from './operational-fixtures.js';
 
 function assertSafe(text: string) { for (const value of sensitive) assert.ok(!text.includes(value), `Sensitive value was logged: ${value}`); }
 async function serve(analyzer = mockAnalyzer().analyzer, lifecycle?: Lifecycle) {
@@ -52,7 +52,7 @@ test('broken logging sink cannot change request behavior', () => {
 for (const fail of [false, true]) test(`REST ${fail ? 'failure' : 'success'} has exactly one safe completion record`, async () => {
   const app = await serve(mockAnalyzer({ fail }).analyzer);
   try {
-    const response = await fetch(`${app.base}/api/analyze?token=private-query`, { method: 'POST', headers: { ...headers, 'x-request-id': sensitive[6]! }, body: JSON.stringify(input) });
+    const response = await fetch(`${app.base}/api/analyze?token=private-query`, { method: 'POST', headers: { ...headers, 'x-request-id': sensitive[6]! }, body: JSON.stringify(httpInput) });
     assert.equal(response.status, fail ? 502 : 200);
     const body = await response.json();
     if (!fail) assert.equal(body.transactionId, input.transactionId);
@@ -69,7 +69,7 @@ test('logging preserves Express case-insensitive and trailing-slash REST route c
   const app = await serve();
   try {
     for (const path of ['/api/analyze/', '/API/ANALYZE']) {
-      const response = await fetch(app.base + path, { method: 'POST', headers, body: JSON.stringify(input) });
+      const response = await fetch(app.base + path, { method: 'POST', headers, body: JSON.stringify(httpInput) });
       assert.equal(response.status, 200); assert.equal((await response.json()).transactionId, input.transactionId);
     }
     assert.equal(app.logs.records().length, 2); assertSafe(app.logs.text());
@@ -96,7 +96,7 @@ test('REST auth, malformed JSON and Origin failures are logged without input/hea
 test('REST input validation failures retain the public error envelope and log safe INVALID_INPUT', async () => {
   const app = await serve();
   try {
-    const r = await fetch(app.base + '/api/analyze', { method: 'POST', headers, body: JSON.stringify({ ...input, customerId: sensitive[6] }) });
+    const r = await fetch(app.base + '/api/analyze', { method: 'POST', headers, body: JSON.stringify({ ...httpInput, customerId: sensitive[6] }) });
     assert.equal(r.status, 400); assert.equal((await r.json()).error.code, 'INVALID_INPUT');
     assert.equal(app.logs.records().length, 1); assert.equal(app.logs.records()[0].errorCode, 'INVALID_INPUT');
     assertSafe(app.logs.text());
@@ -118,7 +118,7 @@ test('public readiness transitions, unchanged healthz and rejection of REST work
       assert.deepEqual(await ready.json(), { status: phase === 'ready' ? 'ready' : 'not_ready' });
       assert.equal(mock.calls(), 0, 'probes never call dependencies');
       if (phase !== 'ready') {
-        const r = await fetch(app.base + '/api/analyze', { method: 'POST', headers, body: JSON.stringify(input) });
+        const r = await fetch(app.base + '/api/analyze', { method: 'POST', headers, body: JSON.stringify(httpInput) });
         assert.equal(r.status, 503); assert.equal((await r.json()).error.code, phase === 'initializing' ? 'NOT_READY' : 'DRAINING');
         if (phase !== 'initializing') assert.equal(lifecycle.markReady(), false);
       }

@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
-import { analysisInput, diagnosisSchema, ServiceError, type AnalysisInput } from './contracts.js';
+import { analysisInput, diagnosisSchema, ServiceError, transactionAnalysisInput, transactionSearchWindow,
+  type AnalysisInput, type LogEntry, type TransactionAnalysisInput } from './contracts.js';
 import { Providers } from './providers.js';
 import { parseJson, requestText, type Fetch } from './http.js';
 import { loadPolicy, type Policy } from './sanitization/policy.js';
@@ -34,7 +35,7 @@ export class Analyzer {
   private active = 0;
   private secrets: string[];
   private policy: Policy;
-  constructor(private config: Config, private fetcher: Fetch = fetch) {
+  constructor(private config: Config, private fetcher: Fetch = fetch, private now: () => Date = () => new Date()) {
     this.providers = new Providers(config, fetcher);
     this.secrets = [config.SERVER_API_KEY, config.APIC_TOKEN, config.LLM_API_KEY];
     this.policy = loadPolicy(config.DATA_POLICY_FILE);
@@ -46,11 +47,27 @@ export class Analyzer {
     try { return await this.run(input); }
     finally { this.active--; }
   }
+  async analyzeTransaction(raw: TransactionAnalysisInput) {
+    const request = transactionAnalysisInput.parse(raw);
+    if (this.active >= this.config.MAX_CONCURRENT_ANALYSES) throw new ServiceError('BUSY', 'Analysis capacity reached; retry later', 429);
+    this.active++;
+    try {
+      const search = { transactionId: request.transaction_id, ...transactionSearchWindow(this.now()) };
+      const logs = await this.providers.apiConnectEvents(search);
+      if (!logs.length) throw new ServiceError('TRANSACTION_NOT_FOUND', `Transaction '${request.transaction_id}' was not found in API Analytics within the last 14 days.`, 404);
+      const { apiId, identity } = await this.providers.resolveTransactionApi(logs);
+      const spec = await this.providers.spec(apiId, identity);
+      return await this.analyzeSources({ ...search, apiId }, logs, spec);
+    } finally { this.active--; }
+  }
   private async run(input: AnalysisInput) {
     const [logs, spec] = await Promise.all([
       this.providers.apiConnectEvents(input), this.providers.spec(input.apiId),
     ]);
     if (!logs.length) throw new ServiceError('NO_LOGS', 'No logs found for this transaction and time range', 404);
+    return this.analyzeSources(input, logs, spec);
+  }
+  private async analyzeSources(input: AnalysisInput, logs: LogEntry[], spec: Record<string, unknown>) {
     const built = await buildDiagnosticContext(input, logs, spec, this.policy, this.secrets);
     try {
       const context = JSON.stringify(built.context);

@@ -13,6 +13,7 @@ export const config = readConfig({
   APIC_SPEC_URL_TEMPLATE: 'http://127.0.0.1:3999/spec/{apiId}', LLM_URL: 'http://127.0.0.1:3999/llm', LLM_MODEL: 'mock',
 });
 export const input = { transactionId: sensitive[4]!, apiId: sensitive[5]!, from: '2026-11-01T09:00:00Z', to: '2026-11-01T10:00:00Z' };
+export const httpInput = { transaction_id: input.transactionId };
 export const headers = { authorization: `Bearer ${config.SERVER_API_KEY}`, 'content-type': 'application/json' };
 export const diagnosis = { summary: 'private-completion', probableCause: 'private-prompt', confidence: 'low', evidence: [], nextSteps: [], missingInformation: [] };
 export function captureLogs() {
@@ -27,9 +28,11 @@ export function mockAnalyzer(options: { fail?: boolean } = {}) {
     if (options.fail) throw new Error(sensitive.join(' '));
     const path = new URL(String(url)).pathname;
     if (path.startsWith('/analytics/')) return Response.json({ total: 1, events: [{ id: 'event-1', event: {
-      global_transaction_id: input.transactionId, datetime: '2026-11-01T09:30:00Z', status: 400, customerId: sensitive[6], payload: sensitive[7],
+      global_transaction_id: input.transactionId, datetime: new URL(String(url)).searchParams.get('end'),
+      api_ref: input.apiId + ':1.0', org_name: 'org', catalog_name: 'catalog',
+      status: 400, customerId: sensitive[6], payload: sensitive[7],
     } }] });
-    if (path.startsWith('/spec/')) return Response.json({ openapi: '3.0.3', info: { title: sensitive[8] }, paths: {} });
+    if (path.startsWith('/spec/')) return Response.json({ openapi: '3.0.3', info: { title: sensitive[8], version: '1.0', 'x-ibm-name': input.apiId }, paths: {} });
     if (path === '/llm') return Response.json({ choices: [{ message: { content: JSON.stringify(diagnosis) } }] });
     throw new Error('Unexpected mock route');
   };

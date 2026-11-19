@@ -51,6 +51,16 @@ npm ci --cache /tmp/support-bot-wp2-npm --no-audit --no-fund
 
 В этой ветке логи извлекаются только через API Connect Analytics. `SPLUNK_*` не нужны; удалите устаревшие поля из локальных overlays/Secrets при следующем согласованном обновлении. Обязательные credentials: `SERVER_API_KEY`, `APIC_TOKEN`, `LLM_API_KEY`. Поле ответа `sources.splunk` сохраняется со значением `0`.
 
+## Transaction-ID-only HTTP workflow
+
+`POST /api/analyze` принимает только `{"transaction_id":"abc-123-xyz"}`. Время и API ID клиент не задаёт: сервер рассчитывает единое UTC окно последних 14 суток, читает все подходящие Analytics events и определяет API по `api_ref` (`name:version`), либо по однозначному `api_name`. Успешная схема ответа не меняется. `APIC_TRANSACTION_FIELD` остаётся серверной настройкой: `global_transaction_id` по умолчанию, `transaction_id` для gateway-local ID.
+
+Укажите реальные `APIC_ORG`/`APIC_CATALOG` (имя либо ID той же области, которую возвращает Analytics). Новый `APIC_SPEC_URL_TEMPLATE` использует `{org}`/`{catalog}` из настроенного scope, сверенного с metadata, и `{apiId}` с сохранённой версией. Фиксированный native URL тоже допустим при совпадении scope. Область другой организации/каталога не выбирается автоматически: несовпадение или конфликт metadata приводит к структурированной ошибке.
+
+Для name fallback нужен catalog list endpoint и `product:view`. При native document URL list выводится автоматически; для custom routing добавьте `APIC_API_LIST_URL_TEMPLATE` с `{apiName}` в ConfigMap. Name fallback читает весь список, выбирая ровно одну версию (с учётом `api_version`, если задана). Никакого выбора latest/первого элемента нет. Ошибки запроса по валидному `api_ref` не приводят к name fallback. Проверяется совпадение `info.version` полученной спецификации.
+
+Успешный пустой Analytics search даёт `404 TRANSACTION_NOT_FOUND`; ошибки связи/auth/schema источников — upstream errors. Сохраняются 200-event/20-page Analytics limits, timeout и concurrency. Более длинное окно не гарантирует, что любой поиск уложится в 90-секундный shutdown budget; лимит остаётся best effort. Для интеграционной проверки используйте известную транзакцию в последние 14 суток, не передавайте timestamps/API ID в body. Operational logs не содержат transaction ID, metadata либо текст upstream errors.
+
 ## Манифесты и ресурсы
 
 | Файл | Назначение |
@@ -172,7 +182,7 @@ Default `SHUTDOWN_TIMEOUT_MS=90000` задан в ConfigMap; `terminationGracePe
 
 ## Проверка текущей ветки
 
-HTTP-only версия: установка по lockfile без MCP SDK, `npm run typecheck`, `npm run build`, `npm test` — **83 passed, 0 failed**. Проверены REST contracts, health/readiness, operational logging, SIGTERM и отсутствие MCP endpoint на mock upstreams. Container smoke harness обновлён для REST-only, но образ в этой итерации не пересобирался и container smoke / OpenShift admission повторно не запускались.
+Transaction-only версия: `npm run typecheck`, `npm run build`, `npm test` — **124 passed, 0 failed**. Проверены строгий HTTP contract, точное 14-дневное UTC окно, Analytics pagination/errors, API identity/version/scope, безопасный name fallback, REST output compatibility, operational logging и SIGTERM на mock upstreams. YAML и scoped URL template проверены локально. Container smoke harness обновлён для transaction-only body; образ в этой итерации не пересобирался, container smoke / OpenShift admission и реальные Analytics/Management/LLM повторно не вызывались.
 
 ## Историческая проверка WP2 и ограничения
 

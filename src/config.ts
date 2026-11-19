@@ -19,6 +19,7 @@ const configSchema = z.object({
   APIC_CATALOG: z.string().regex(/^[A-Za-z0-9_-]+$/),
   APIC_TRANSACTION_FIELD: z.enum(['global_transaction_id', 'transaction_id']).default('global_transaction_id'),
   APIC_SPEC_URL_TEMPLATE: endpoint.refine(value => value.includes('{apiId}'), 'Include {apiId} in the spec URL'),
+  APIC_API_LIST_URL_TEMPLATE: endpoint.refine(value => value.includes('{apiName}'), 'Include {apiName} in the API list URL').optional(),
   APIC_TOKEN: z.string().min(1),
   LLM_URL: endpoint,
   LLM_API_KEY: z.string().min(1),
